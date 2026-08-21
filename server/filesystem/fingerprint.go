@@ -5,8 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"hash"
 	iofs "io/fs"
+	"sort"
 	"strings"
 	"time"
 
@@ -28,10 +28,13 @@ type FingerprintResult struct {
 // It reads no file contents, so its cost is comparable to the periodic disk usage
 // walk. The ignore lines use the same matcher as the archiver, which keeps the
 // fingerprint and the archive in agreement about what counts as server content.
+// Entries are collected during the walk and sorted before hashing, so the
+// digest is a function of the file set and its metadata alone, never of the
+// order the kernel happened to enumerate directory entries in.
 func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*FingerprintResult, error) {
 	start := time.Now()
 	matcher := ignore.CompileIgnoreLines(strings.Split(ignoreLines, "\n")...)
-	digest := sha256.New()
+	var lines []string
 	files := 0
 
 	// Open the root the same way the archiver does so both walks see the same tree...
@@ -65,12 +68,12 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 		}
 
 		if d.IsDir() {
-			writeFingerprintEntry(digest, relative, "dir")
+			lines = append(lines, fingerprintEntryLine(relative, "dir"))
 			return nil
 		}
 
 		if d.Type()&iofs.ModeSymlink != 0 {
-			writeFingerprintEntry(digest, relative, "symlink")
+			lines = append(lines, fingerprintEntryLine(relative, "symlink"))
 			return nil
 		}
 
@@ -79,12 +82,25 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 			return err
 		}
 
-		fmt.Fprintf(digest, "%s\x00%d\x00%d\n", relative, info.Size(), info.ModTime().UnixNano())
+		lines = append(lines, fmt.Sprintf("%s\x00%d\x00%d\n", relative, info.Size(), info.ModTime().UnixNano()))
 		files++
 		return nil
 	})
 	if err != nil {
 		return nil, err
+	}
+
+	// Hashed-directory filesystems such as ext4 (htree) and btrfs do not
+	// guarantee stable enumeration order: an unrelated insert or delete
+	// elsewhere in a directory can reshuffle the order later entries are
+	// returned in, hours apart, even though the directory's own contents
+	// never changed. Sorting the collected lines before hashing removes that
+	// variable, so the digest only ever changes when the file set does...
+	sort.Strings(lines)
+
+	digest := sha256.New()
+	for _, line := range lines {
+		digest.Write([]byte(line))
 	}
 
 	return &FingerprintResult{
@@ -94,8 +110,8 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 	}, nil
 }
 
-// writeFingerprintEntry records a non-file entry so that additions and removals
+// fingerprintEntryLine formats a non-file entry so that additions and removals
 // of directories and links are detected even though they carry no size or mtime.
-func writeFingerprintEntry(digest hash.Hash, relative, kind string) {
-	fmt.Fprintf(digest, "%s\x00%s\n", relative, kind)
+func fingerprintEntryLine(relative, kind string) string {
+	return fmt.Sprintf("%s\x00%s\n", relative, kind)
 }

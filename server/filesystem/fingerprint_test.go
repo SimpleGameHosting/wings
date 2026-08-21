@@ -78,6 +78,43 @@ func TestFilesystem_Fingerprint(t *testing.T) {
 			g.Assert(before.Fingerprint != after.Fingerprint).IsTrue()
 		})
 
+		g.It("is independent of directory enumeration order", func() {
+			writeTestFile(g, fs, "a.txt", "same\n")
+			writeTestFile(g, fs, "b.txt", "same\n")
+			writeTestFile(g, fs, "c.txt", "same\n")
+			before := fingerprintOf(g, fs, "")
+
+			// Capture each file's mtime, then delete and recreate all three in
+			// the opposite order and restore the original mtimes. The file set
+			// and its metadata end up identical, so only the kernel's directory
+			// enumeration order could still differ between the two runs...
+			full := func(name string) string {
+				return filepath.Join(rfs.root, "server", name)
+			}
+			mtimeOf := func(name string) time.Time {
+				info, err := os.Stat(full(name))
+				g.Assert(err).IsNil()
+				return info.ModTime()
+			}
+			aTime, bTime, cTime := mtimeOf("a.txt"), mtimeOf("b.txt"), mtimeOf("c.txt")
+
+			g.Assert(fs.Delete("a.txt")).IsNil()
+			g.Assert(fs.Delete("b.txt")).IsNil()
+			g.Assert(fs.Delete("c.txt")).IsNil()
+
+			writeTestFile(g, fs, "c.txt", "same\n")
+			writeTestFile(g, fs, "b.txt", "same\n")
+			writeTestFile(g, fs, "a.txt", "same\n")
+
+			g.Assert(os.Chtimes(full("a.txt"), aTime, aTime)).IsNil()
+			g.Assert(os.Chtimes(full("b.txt"), bTime, bTime)).IsNil()
+			g.Assert(os.Chtimes(full("c.txt"), cTime, cTime)).IsNil()
+
+			after := fingerprintOf(g, fs, "")
+
+			g.Assert(before.Fingerprint).Equal(after.Fingerprint)
+		})
+
 		g.It("ignores changes to files matched by the ignore lines", func() {
 			writeTestFile(g, fs, "server.properties", "motd=hello\n")
 			writeTestFile(g, fs, "logs/latest.log", "line one\n")
