@@ -81,6 +81,7 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 		server.POST("/install", postServerInstall)
 		server.POST("/reinstall", postServerReinstall)
 		server.POST("/sync", postServerSync)
+		server.POST("/fingerprint", postServerFingerprint)
 		server.POST("/ws/deny", postServerDenyWSTokens)
 
 		// This archive request causes the archive to start being created
