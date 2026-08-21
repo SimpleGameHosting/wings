@@ -21,9 +21,10 @@ type ConfigurationMeta struct {
 	Description string `json:"description"`
 }
 
-type Configuration struct {
-	mu sync.RWMutex
-
+// ConfigurationData holds the server settings the Panel syncs to Wings. It is a
+// plain value with no lock of its own, so it can be decoded, copied, and swapped
+// into place wholesale; Configuration wraps it with the lock guarding the live copy.
+type ConfigurationData struct {
 	// The unique identifier for the server that should be used when referencing
 	// it against the Panel API (and internally). This will be used when naming
 	// docker containers as well as in log output.
@@ -61,6 +62,15 @@ type Configuration struct {
 	} `json:"container,omitempty"`
 }
 
+// Configuration is the live, lock-guarded configuration of a server. The settings
+// live in the embedded ConfigurationData so that SyncWithConfiguration can replace
+// them without ever copying the mutex.
+type Configuration struct {
+	mu sync.RWMutex
+
+	ConfigurationData
+}
+
 func (s *Server) Config() *Configuration {
 	s.cfg.mu.RLock()
 	defer s.cfg.mu.RUnlock()
@@ -78,6 +88,15 @@ func (s *Server) MemoryLimit() int64 {
 	s.cfg.mu.RLock()
 	defer s.cfg.mu.RUnlock()
 	return s.cfg.Build.MemoryLimit
+}
+
+// configurationSnapshot returns a copy of the server settings taken under the
+// read lock, for callers that serialize the whole configuration rather than
+// read a single field through Config().
+func (s *Server) configurationSnapshot() ConfigurationData {
+	s.cfg.mu.RLock()
+	defer s.cfg.mu.RUnlock()
+	return s.cfg.ConfigurationData
 }
 
 func (c *Configuration) GetUuid() string {

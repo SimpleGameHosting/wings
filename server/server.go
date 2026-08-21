@@ -43,7 +43,7 @@ type Server struct {
 	// The crash handler for this server instance.
 	crasher CrashHandler
 
-	resources   ResourceUsage
+	resources   resourceTracker
 	Environment environment.ProcessEnvironment `json:"-"`
 
 	fs *filesystem.Filesystem
@@ -222,7 +222,7 @@ func (s *Server) Sync() error {
 // can be called from scoped where the server may not be fully initialized,
 // therefore other things like the filesystem and environment may not exist yet.
 func (s *Server) SyncWithConfiguration(cfg remote.ServerConfigurationResponse) error {
-	c := Configuration{
+	c := ConfigurationData{
 		CrashDetectionEnabled: config.Get().System.CrashDetection.CrashDetectionEnabled,
 	}
 	if err := json.Unmarshal(cfg.Settings, &c); err != nil {
@@ -232,14 +232,9 @@ func (s *Server) SyncWithConfiguration(cfg remote.ServerConfigurationResponse) e
 	s.cfg.mu.Lock()
 	defer s.cfg.mu.Unlock()
 
-	// Lock the new configuration. Since we have the deferred Unlock above we need
-	// to make sure that the NEW configuration object is already locked since that
-	// defer is running on the memory address for "s.cfg.mu" which we're explicitly
-	// changing on the next line.
-	c.mu.Lock()
-
-	//goland:noinspection GoVetCopyLock
-	s.cfg = c
+	// Only the settings are replaced. The lock guarding them stays where it is,
+	// so anything already queued on it wakes up normally once we unlock.
+	s.cfg.ConfigurationData = c
 
 	s.Lock()
 	s.procConfig = cfg.ProcessConfiguration
@@ -374,10 +369,10 @@ func (s *Server) IsRunning() bool {
 // instance on Wings. This includes the information needed by the Panel in order
 // to show resource utilization and the current state on this system.
 type APIResponse struct {
-	State         string        `json:"state"`
-	IsSuspended   bool          `json:"is_suspended"`
-	Utilization   ResourceUsage `json:"utilization"`
-	Configuration Configuration `json:"configuration"`
+	State         string            `json:"state"`
+	IsSuspended   bool              `json:"is_suspended"`
+	Utilization   ResourceUsage     `json:"utilization"`
+	Configuration ConfigurationData `json:"configuration"`
 }
 
 // ToAPIResponse returns the server struct as an API object that can be consumed
@@ -387,6 +382,6 @@ func (s *Server) ToAPIResponse() APIResponse {
 		State:         s.Environment.State(),
 		IsSuspended:   s.IsSuspended(),
 		Utilization:   s.Proc(),
-		Configuration: *s.Config(),
+		Configuration: s.configurationSnapshot(),
 	}
 }

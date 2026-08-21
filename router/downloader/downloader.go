@@ -162,8 +162,10 @@ func ByID(dlid string) *Download {
 	return instance.find(dlid)
 }
 
-//goland:noinspection GoVetCopyLock
-func (dl Download) MarshalJSON() ([]byte, error) {
+// MarshalJSON reports the identifier and progress of a download. It takes a
+// pointer receiver so the download, and the mutex guarding its progress, is
+// never copied while the download goroutine is still updating it.
+func (dl *Download) MarshalJSON() ([]byte, error) {
 	return json.Marshal(struct {
 		Identifier string
 		Progress   float64
