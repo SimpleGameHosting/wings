@@ -26,6 +26,7 @@ type Client interface {
 	GetInstallationScript(ctx context.Context, uuid string) (InstallationScript, error)
 	GetServerConfiguration(ctx context.Context, uuid string) (ServerConfigurationResponse, error)
 	GetServers(context context.Context, perPage int) ([]RawServerData, error)
+	ReportCrash(ctx context.Context, uuid string, data CrashReportRequest) error
 	ResetServersState(ctx context.Context) error
 	SetArchiveStatus(ctx context.Context, uuid string, successful bool) error
 	SetBackupStatus(ctx context.Context, backup string, data BackupRequest) error

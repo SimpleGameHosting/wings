@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/apex/log"
 
@@ -173,4 +174,14 @@ type BackupRequest struct {
 type InstallStatusRequest struct {
 	Successful bool `json:"successful"`
 	Reinstall  bool `json:"reinstall"`
+}
+
+// CrashReportRequest is sent to the Panel when a server process is detected
+// in a crashed state, so the Panel can generate a crash report for it.
+// UptimeSeconds is 0 when the process uptime could not be captured.
+type CrashReportRequest struct {
+	ExitCode      uint32    `json:"exit_code"`
+	OOMKilled     bool      `json:"oom_killed"`
+	UptimeSeconds int64     `json:"uptime_seconds"`
+	OccurredAt    time.Time `json:"occurred_at"`
 }

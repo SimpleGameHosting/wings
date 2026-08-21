@@ -18,4 +18,9 @@ Every SGH modification MUST be registered here before its work is considered com
 
 ## Patches
 
-(registered per patch in later tasks)
+### remote: ReportCrash panel callback
+
+- What: adds `ReportCrash` to the remote client (interface + implementation) with `CrashReportRequest`.
+- Why: the panel's crash analyzer needs authoritative crash detection (spec: panel repo, docs/superpowers/specs/2026-08-20-crash-analyzer-design.md).
+- Files: `remote/http.go`, `remote/types.go`, `remote/servers.go`, `remote/servers_test.go`.
+- Conflict risk on rebase: low; appends only.

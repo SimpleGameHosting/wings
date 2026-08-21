@@ -101,6 +101,18 @@ func (c *client) SetInstallationStatus(ctx context.Context, uuid string, data In
 	return nil
 }
 
+// ReportCrash notifies the Panel that a server process was detected in a
+// crashed state. The Panel uses this to build a crash report; failures are
+// the caller's concern and must never affect crash handling itself.
+func (c *client) ReportCrash(ctx context.Context, uuid string, data CrashReportRequest) error {
+	resp, err := c.Post(ctx, fmt.Sprintf("/servers/%s/crash", uuid), data)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 func (c *client) SetArchiveStatus(ctx context.Context, uuid string, successful bool) error {
 	resp, err := c.Post(ctx, fmt.Sprintf("/servers/%s/archive", uuid), d{"successful": successful})
 	if err != nil {
