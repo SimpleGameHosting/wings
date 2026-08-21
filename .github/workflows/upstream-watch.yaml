@@ -1,0 +1,35 @@
+name: upstream-watch
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compare against upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git remote add upstream https://github.com/pterodactyl/wings.git
+          git fetch upstream --tags
+          BASE=$(grep -oE 'Base: upstream `?develop`? @ `?[0-9a-f]+' SGH-PATCHES.md | grep -oE '[0-9a-f]{7,}$' || true)
+          LATEST_TAG=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | grep -v sgh | head -1)
+          NEW_COMMITS=$(git rev-list --count "${BASE}"..upstream/develop || echo "unknown")
+          if [ "${NEW_COMMITS}" != "0" ] && [ "${NEW_COMMITS}" != "unknown" ]; then
+            TITLE="upstream activity: ${NEW_COMMITS} new commits past pinned base"
+            EXISTING=$(gh issue list --state open --search "in:title upstream activity" --json number --jq 'length')
+            if [ "${EXISTING}" = "0" ]; then
+              gh issue create --title "${TITLE}" \
+                --body "Upstream develop has ${NEW_COMMITS} commits past our pinned base (${BASE}). Latest upstream tag: ${LATEST_TAG}. Follow the rebase runbook in SGH-PATCHES.md and prioritize if any are security fixes."
+            fi
+          fi

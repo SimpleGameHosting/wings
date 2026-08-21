@@ -1,8 +1,10 @@
 name: Release
+
 on:
   push:
     tags:
       - "v*"
+
 jobs:
   release:
     name: Release
@@ -27,45 +29,20 @@ jobs:
           GOARCH=arm64 go build -o dist/wings_linux_arm64 -v -trimpath -ldflags="-s -w -X github.com/pterodactyl/wings/system.Version=${{ github.ref_name }}" github.com/pterodactyl/wings
           chmod 755 dist/wings_linux_arm64
 
-      - name: Create release branch
-        env:
-          VERSION: ${{ github.ref_name }}
+      - name: Create checksums.txt
         run: |
-          BRANCH=release/${{ env.VERSION }}
-          git config --local user.email "ci@pterodactyl.io"
-          git config --local user.name "Pterodactyl CI"
-          git checkout -b $BRANCH
-          git push -u origin $BRANCH
-          sed -i "s/var Version = \".*\"/var Version = \"${VERSION:1}\"/" system/const.go
-          git add system/const.go
-          git commit -m "ci(release): bump version"
-          git push
+          SUM=`cd dist && sha256sum wings_linux_amd64`
+          SUM2=`cd dist && sha256sum wings_linux_arm64`
+          echo -e "$SUM\n$SUM2" > checksums.txt
 
-      - name: write changelog
-        run: |
-          sed -n "/^## ${{ github.ref_name }}/,/^## /{/^## /b;p}" CHANGELOG.md > ./RELEASE_CHANGELOG
-
-      - uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
+      - name: Create release
+        uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           draft: true
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
-          body_path: ./RELEASE_CHANGELOG
+          generate_release_notes: true
           files: |
             dist/*
-
-      # Hand the tagged version to pterodactyl/pterodactyl-cdn, which publishes
-      # https://cdn.pterodactyl.io/releases/latest.json. It can't read the
-      # version off the API itself, because the release above is still a draft.
-      # GITHUB_TOKEN deliberately cannot be used here: it has no access to
-      # another repository.
-      - name: Update CDN release manifest
-        if: ${{ !contains(github.ref_name, 'rc') && !contains(github.ref_name, 'beta') && !contains(github.ref_name, 'alpha') }}
-        env:
-          GH_TOKEN: ${{ secrets.CDN_DISPATCH_TOKEN }}
-          VERSION: ${{ github.ref_name }}
-        run: |
-          jq -n --arg version "$VERSION" \
-            '{event_type: "release-tagged", client_payload: {component: "wings", version: $version}}' \
-            | gh api repos/pterodactyl/pterodactyl-cdn/dispatches --input -
+            checksums.txt

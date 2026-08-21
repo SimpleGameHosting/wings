@@ -31,3 +31,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: authoritative crash detection for the panel crash analyzer, including unattended and throttled crashes; the stash exists because `s.resources.Reset()` zeroes uptime before the crash handler runs.
 - Files: `server/crash.go`, `server/server.go`, `server/crash_test.go`.
 - Conflict risk on rebase: low-medium; touches two lines inside `OnStateChange`.
+
+### ci: sgh branch triggers, upstream watch, govulncheck
+
+- What: push.yaml/release.yaml retargeted for the fork (sgh branch, generated release notes, no upstream release-branch automation); adds scheduled upstream-activity issues and weekly govulncheck.
+- Why: Kane's fork constraints - active upstream security tracking without waiting on a maintenance-mode upstream.
+- Files: `.github/workflows/*.yaml`.
+- Conflict risk on rebase: low; upstream rarely touches workflows beyond dependabot bumps.

@@ -3,10 +3,10 @@ name: Push
 on:
   push:
     branches:
-      - develop
+      - sgh
   pull_request:
     branches:
-      - develop
+      - sgh
 
 jobs:
   build-and-test:
