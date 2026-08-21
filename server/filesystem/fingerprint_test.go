@@ -137,16 +137,31 @@ func TestFilesystem_Fingerprint(t *testing.T) {
 			g.Assert(after.Files).Equal(1)
 		})
 
-		g.It("does not descend into ignored directories", func() {
+		g.It("matches files inside ignored directories individually like the archiver", func() {
 			writeTestFile(g, fs, "backups/keep.txt", "keep\n")
+			writeTestFile(g, fs, "backups/old.tar.gz", "old\n")
 			writeTestFile(g, fs, "world/level.dat", "level\n")
 
-			// Pruning wins: an ignored directory is never descended into, so the
-			// negation naming a file inside it is never reached. That mirrors
-			// git's own semantics, and the archiver prunes the same way...
+			// The archiver never prunes a matched directory; it descends into it
+			// regardless and matches every entry inside individually, so the
+			// negation naming keep.txt still re-includes it while old.tar.gz stays
+			// excluded. The fingerprint must walk the same way to agree with the
+			// archiver about what a backup would contain...
 			result := fingerprintOf(g, fs, "backups\n!backups/keep.txt")
 
-			g.Assert(result.Files).Equal(1)
+			g.Assert(result.Files).Equal(2)
+
+			before := result.Fingerprint
+
+			writeTestFile(g, fs, "backups/keep.txt", "keep\nmore\n")
+			after := fingerprintOf(g, fs, "backups\n!backups/keep.txt")
+
+			g.Assert(before != after.Fingerprint).IsTrue()
+
+			writeTestFile(g, fs, "backups/old.tar.gz", "old\nmore\n")
+			afterIgnoredEdit := fingerprintOf(g, fs, "backups\n!backups/keep.txt")
+
+			g.Assert(after.Fingerprint).Equal(afterIgnoredEdit.Fingerprint)
 		})
 
 		g.It("matches a trailing-slash pattern per file, exactly as the archiver does", func() {
@@ -155,9 +170,10 @@ func TestFilesystem_Fingerprint(t *testing.T) {
 
 			// The matcher only recognises "backups/" as a directory pattern when
 			// the path it is given also ends in a slash, and the walk offers it
-			// the bare relative path. The directory is therefore descended into
-			// and every entry is matched individually, so a negation inside it
-			// does take effect. The archiver matches the very same way, and the
+			// the bare relative path. Whether or not the pattern carries the
+			// trailing slash, the walk descends into the directory and matches
+			// every entry inside individually, so a negation inside it does take
+			// effect either way. The archiver matches the very same way, and the
 			// fingerprint must agree with the archiver about what a backup would
 			// contain, so this parity is the behaviour worth pinning down...
 			result := fingerprintOf(g, fs, "backups/\n!backups/keep.txt")
