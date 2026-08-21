@@ -53,3 +53,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: the concurrency and fail-fast fixes close gaps found while hardening upstream-watch.yaml for unattended runs; the govulncheck exceptions filter turns the two BLOCKED docker/docker findings above into an enforced, self-documenting allowlist instead of a workflow that either silently ignores all findings or blocks on findings that were already ruled out; the push.yaml fix restores artifact uploads on the branch this fork actually pushes to.
 - Files: `.github/workflows/upstream-watch.yaml`, `.github/workflows/govulncheck.yaml`, `.govulncheck-exceptions`, `.github/workflows/push.yaml`.
 - Conflict risk on rebase: low; upstream rarely touches these workflow files beyond dependabot version bumps, and `.govulncheck-exceptions` is fork-only.
+
+### vet: drop unreachable returns
+
+- What: deletes the `return` statements that follow `panic(...)` in the `NewFs()` test helper (`server/filesystem/filesystem_test.go`, three sites) and in `router.Configure` (`router/router.go`, one site). `panic` never returns, so none of the four lines could execute; `go vet ./...` reported each as "unreachable code". No behavior change.
+- Why: `go vet ./...` is part of the fork's verification gate (alongside `gofmt -l`, `go test -race` and `go build`) and has to pass cleanly for that gate to mean anything. All four findings are pure upstream code (d1c0ca52 and ff50d0e5) that upstream has not fixed as of `upstream/develop` @ d611682.
+- Files: `server/filesystem/filesystem_test.go`, `router/router.go`.
+- Conflict risk on rebase: low; four deleted lines, and upstream's later commits to both files (token masking in the request logger, new filesystem tests) do not touch them. If upstream ever deletes the same lines itself, this patch becomes empty and can be dropped from the series.
