@@ -7,6 +7,9 @@ on:
     branches: [sgh]
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   scan:
     runs-on: ubuntu-24.04
@@ -17,5 +20,39 @@ jobs:
           go-version: "1.25.0"
       - name: Run govulncheck
         run: |
+          set -euo pipefail
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          govulncheck -json ./... > govulncheck-output.json
+
+          FILTER='
+          def accepted_ids:
+            ($exceptions
+              | split("\n")
+              | map(sub("#.*$"; ""))
+              | map(gsub("^\\s+|\\s+$"; ""))
+              | map(select(length > 0)));
+
+          [ inputs
+            | select(has("finding"))
+            | select([.finding.trace[]? | select(has("function"))] | length > 0)
+            | .finding.osv
+          ] | unique as $found
+          | accepted_ids as $accepted
+          | ($found - $accepted) as $unexpected
+          | ($found - $unexpected) as $accepted_found
+          | "ACCEPTED \($accepted_found | join(","))",
+            "UNEXPECTED \($unexpected | join(","))"
+          '
+
+          SUMMARY=$(jq -n -r --rawfile exceptions .govulncheck-exceptions "$FILTER" govulncheck-output.json)
+          echo "${SUMMARY}"
+
+          UNEXPECTED_LINE=$(echo "${SUMMARY}" | grep '^UNEXPECTED ')
+          UNEXPECTED="${UNEXPECTED_LINE#UNEXPECTED }"
+
+          if [ -n "${UNEXPECTED}" ]; then
+            echo "govulncheck found vulnerabilities not listed in .govulncheck-exceptions: ${UNEXPECTED}"
+            exit 1
+          fi
+
+          echo "All actually-affected findings are documented in .govulncheck-exceptions."

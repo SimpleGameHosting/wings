@@ -5,6 +5,10 @@ on:
     - cron: "17 6 * * 1"
   workflow_dispatch: {}
 
+concurrency:
+  group: upstream-watch
+  cancel-in-progress: false
+
 permissions:
   issues: write
   contents: read
@@ -21,9 +25,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           git remote add upstream https://github.com/pterodactyl/wings.git
           git fetch upstream --tags
           BASE=$(grep -oE 'Base: upstream `?develop`? @ `?[0-9a-f]+' SGH-PATCHES.md | grep -oE '[0-9a-f]{7,}$' || true)
+          if [ -z "$BASE" ]; then
+            echo "could not extract pinned base from SGH-PATCHES.md"
+            exit 1
+          fi
           LATEST_TAG=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | grep -v sgh | head -1)
           NEW_COMMITS=$(git rev-list --count "${BASE}"..upstream/develop || echo "unknown")
           if [ "${NEW_COMMITS}" != "0" ] && [ "${NEW_COMMITS}" != "unknown" ]; then

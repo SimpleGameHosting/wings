@@ -1,0 +1,2 @@
+GO-2026-4887 # github.com/docker/docker: no fix under this import path, only moby/moby/v2 beta
+GO-2026-4883 # github.com/docker/docker: no fix under this import path, only moby/moby/v2 beta
