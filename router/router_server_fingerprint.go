@@ -32,8 +32,10 @@ func postServerFingerprint(c *gin.Context) {
 	result, err := s.Filesystem().Fingerprint(ctx, data.Ignore)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
+			middleware.ExtractLogger(c).WithField("deadline", fingerprintDeadline.String()).Warn("router: server fingerprint exceeded its deadline")
 			c.AbortWithStatusJSON(http.StatusGatewayTimeout, gin.H{
-				"error": "The server fingerprint could not be computed within the deadline.",
+				"error":      "The server fingerprint could not be computed within the deadline.",
+				"request_id": c.GetString("request_id"),
 			})
 			return
 		}
