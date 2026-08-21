@@ -12,7 +12,7 @@ Every SGH modification MUST be registered here before its work is considered com
 2. Pick the new base: the newest upstream release tag, or a pinned `develop` commit when tags lag on security updates.
 3. `git rebase --onto <new-base> <old-base> sgh`
 4. Resolve conflicts patch by patch; each entry below lists its touched files.
-5. `go build ./... && go test -race ./...` - run on Linux, or inside a golang container (Wings does not build natively on macOS)
+5. `gofmt -l . && go vet ./... && CGO_ENABLED=1 go test -race ./... && CGO_ENABLED=0 go build ./...` - run on Linux, or inside a golang container (Wings does not build natively on macOS). `-race` needs cgo, so the test step cannot run with `CGO_ENABLED=0`; the build step uses `CGO_ENABLED=0` to match the binaries push.yaml and release.yaml publish.
 6. Update the Base line above, tag `v<upstream>-sgh.<n+1>`, push with `--force-with-lease`.
 7. Canary one node, then roll the fleet via `playbooks/pterodactyl/wings_update`.
 
