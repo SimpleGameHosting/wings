@@ -24,3 +24,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: the panel's crash analyzer needs authoritative crash detection (spec: panel repo, docs/superpowers/specs/2026-08-20-crash-analyzer-design.md).
 - Files: `remote/http.go`, `remote/types.go`, `remote/servers.go`, `remote/servers_test.go`.
 - Conflict risk on rebase: low; appends only.
+
+### server: report crashes to the panel
+
+- What: `handleServerCrash()` fires `ReportCrash` in a fire-and-forget goroutine (30s timeout) before the restart-throttle check; `CrashHandler` gains a mutex-guarded `lastUptime` stashed in `OnStateChange` before stats reset.
+- Why: authoritative crash detection for the panel crash analyzer, including unattended and throttled crashes; the stash exists because `s.resources.Reset()` zeroes uptime before the crash handler runs.
+- Files: `server/crash.go`, `server/server.go`, `server/crash_test.go`.
+- Conflict risk on rebase: low-medium; touches two lines inside `OnStateChange`.

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"sync"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/environment"
+	"github.com/pterodactyl/wings/remote"
 )
 
 type CrashHandler struct {
@@ -17,6 +19,11 @@ type CrashHandler struct {
 
 	// Tracks the time of the last server crash event.
 	lastCrash time.Time
+
+	// Uptime of the server process in milliseconds, captured immediately
+	// before the environment stats were reset as the process went offline.
+	// Zero means unknown. Used to enrich the panel crash report.
+	lastUptime int64
 }
 
 // Returns the time of the last crash for this server instance.
@@ -31,6 +38,23 @@ func (cd *CrashHandler) LastCrashTime() time.Time {
 func (cd *CrashHandler) SetLastCrash(t time.Time) {
 	cd.mu.Lock()
 	cd.lastCrash = t
+	cd.mu.Unlock()
+}
+
+// LastUptime returns the process uptime in milliseconds captured at the
+// most recent transition to the offline state, or zero when unknown.
+func (cd *CrashHandler) LastUptime() int64 {
+	cd.mu.RLock()
+	defer cd.mu.RUnlock()
+
+	return cd.lastUptime
+}
+
+// SetLastUptime stores the process uptime captured before the environment
+// stats were reset for an offline transition.
+func (cd *CrashHandler) SetLastUptime(ms int64) {
+	cd.mu.Lock()
+	cd.lastUptime = ms
 	cd.mu.Unlock()
 }
 
@@ -73,6 +97,10 @@ func (s *Server) handleServerCrash() error {
 	s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Exit code: %d", exitCode))
 	s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Out of memory: %t", oomKilled))
 
+	// Report the crash to the Panel in the background so a crash report can
+	// be generated. This must never block or delay the restart flow below.
+	s.reportCrashToPanel(exitCode, oomKilled)
+
 	c := s.crasher.LastCrashTime()
 	timeout := config.Get().System.CrashDetection.Timeout
 
@@ -88,4 +116,22 @@ func (s *Server) handleServerCrash() error {
 	s.crasher.SetLastCrash(time.Now())
 
 	return errors.Wrap(s.HandlePowerAction(PowerActionStart), "failed to start server after crash detection")
+}
+
+// reportCrashToPanel notifies the Panel of a detected crash from a
+// background routine. Failures are logged and dropped: crash reporting is
+// best effort and must never interfere with crash handling or restarts.
+func (s *Server) reportCrashToPanel(exitCode uint32, oomKilled bool) {
+	ctx, cancel := context.WithTimeout(s.Context(), time.Second*30)
+	go func() {
+		defer cancel()
+		if err := s.client.ReportCrash(ctx, s.ID(), remote.CrashReportRequest{
+			ExitCode:      exitCode,
+			OOMKilled:     oomKilled,
+			UptimeSeconds: s.crasher.LastUptime() / 1000,
+			OccurredAt:    time.Now(),
+		}); err != nil {
+			s.Log().WithField("error", err).Warn("failed to report crash to panel")
+		}
+	}()
 }

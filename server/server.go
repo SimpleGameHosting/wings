@@ -330,6 +330,9 @@ func (s *Server) OnStateChange() {
 	// Reset the resource usage to 0 when the process fully stops so that all the UI
 	// views in the Panel correctly display 0.
 	if st == environment.ProcessOfflineState {
+		// Capture the uptime before the reset wipes it; the crash handler
+		// reports it to the Panel if this transition turns out to be a crash.
+		s.crasher.SetLastUptime(s.Proc().Uptime)
 		s.resources.Reset()
 		s.Events().Publish(StatsEvent, s.Proc())
 	}
