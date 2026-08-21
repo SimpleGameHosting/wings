@@ -1,6 +1,7 @@
 package filesystem
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -28,13 +29,15 @@ type FingerprintResult struct {
 // It reads no file contents, so its cost is comparable to the periodic disk usage
 // walk. The ignore lines use the same matcher as the archiver, which keeps the
 // fingerprint and the archive in agreement about what counts as server content.
-// Entries are collected during the walk and sorted before hashing, so the
-// digest is a function of the file set and its metadata alone, never of the
-// order the kernel happened to enumerate directory entries in.
+// Each entry is reduced to its own SHA-256 digest as it is visited, and those
+// fixed-size digests are sorted before being folded into the final hash. The
+// fingerprint is therefore a function of the file set and its metadata alone,
+// never of the order the kernel happened to enumerate directory entries in, and
+// the walk holds a flat 32 bytes per entry however long the paths are.
 func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*FingerprintResult, error) {
 	start := time.Now()
 	matcher := ignore.CompileIgnoreLines(strings.Split(ignoreLines, "\n")...)
-	var lines []string
+	var digests [][sha256.Size]byte
 	files := 0
 
 	// Open the root the same way the archiver does so both walks see the same tree...
@@ -68,12 +71,22 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 		}
 
 		if d.IsDir() {
-			lines = append(lines, fingerprintEntryLine(relative, "dir"))
+			digests = append(digests, sha256.Sum256([]byte(fingerprintEntryLine(relative, "dir"))))
 			return nil
 		}
 
+		// A symlink is described by its own lstat modification time, so pointing
+		// an existing link at a new target changes the fingerprint even though
+		// the link's path stays the same...
 		if d.Type()&iofs.ModeSymlink != 0 {
-			lines = append(lines, fingerprintEntryLine(relative, "symlink"))
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+
+			line := fmt.Sprintf("%s\x00symlink\x00%d\n", relative, info.ModTime().UnixNano())
+			digests = append(digests, sha256.Sum256([]byte(line)))
+
 			return nil
 		}
 
@@ -82,8 +95,10 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 			return err
 		}
 
-		lines = append(lines, fmt.Sprintf("%s\x00%d\x00%d\n", relative, info.Size(), info.ModTime().UnixNano()))
+		line := fmt.Sprintf("%s\x00%d\x00%d\n", relative, info.Size(), info.ModTime().UnixNano())
+		digests = append(digests, sha256.Sum256([]byte(line)))
 		files++
+
 		return nil
 	})
 	if err != nil {
@@ -94,13 +109,16 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 	// guarantee stable enumeration order: an unrelated insert or delete
 	// elsewhere in a directory can reshuffle the order later entries are
 	// returned in, hours apart, even though the directory's own contents
-	// never changed. Sorting the collected lines before hashing removes that
-	// variable, so the digest only ever changes when the file set does...
-	sort.Strings(lines)
+	// never changed. Sorting the entry digests before folding them together
+	// removes that variable, so the fingerprint only ever changes when the
+	// file set does...
+	sort.Slice(digests, func(i, j int) bool {
+		return bytes.Compare(digests[i][:], digests[j][:]) < 0
+	})
 
 	digest := sha256.New()
-	for _, line := range lines {
-		digest.Write([]byte(line))
+	for _, entry := range digests {
+		digest.Write(entry[:])
 	}
 
 	return &FingerprintResult{
@@ -110,8 +128,8 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 	}, nil
 }
 
-// fingerprintEntryLine formats a non-file entry so that additions and removals
-// of directories and links are detected even though they carry no size or mtime.
+// fingerprintEntryLine formats an entry that carries no size or mtime of its
+// own, so that additions and removals of directories are still detected.
 func fingerprintEntryLine(relative, kind string) string {
 	return fmt.Sprintf("%s\x00%s\n", relative, kind)
 }

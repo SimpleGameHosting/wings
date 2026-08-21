@@ -9,7 +9,16 @@ import (
 	"time"
 
 	. "github.com/franela/goblin"
+	"golang.org/x/sys/unix"
 )
+
+// backdateSymlink moves a symlink's own modification time an hour into the
+// past without following it, which lets a test tell two versions of the same
+// link apart even when both were created inside a single kernel clock tick.
+func backdateSymlink(g *G, path string) {
+	past := unix.NsecToTimespec(time.Now().Add(-time.Hour).UnixNano())
+	g.Assert(unix.UtimesNanoAt(unix.AT_FDCWD, path, []unix.Timespec{past, past}, unix.AT_SYMLINK_NOFOLLOW)).IsNil()
+}
 
 // writeTestFile writes a small file through the filesystem under test.
 func writeTestFile(g *G, fs *Filesystem, name, contents string) {
@@ -129,12 +138,51 @@ func TestFilesystem_Fingerprint(t *testing.T) {
 		})
 
 		g.It("does not descend into ignored directories", func() {
-			writeTestFile(g, fs, "backups/huge.tar.gz", "x\n")
+			writeTestFile(g, fs, "backups/keep.txt", "keep\n")
 			writeTestFile(g, fs, "world/level.dat", "level\n")
 
-			result := fingerprintOf(g, fs, "backups/")
+			// Pruning wins: an ignored directory is never descended into, so the
+			// negation naming a file inside it is never reached. That mirrors
+			// git's own semantics, and the archiver prunes the same way...
+			result := fingerprintOf(g, fs, "backups\n!backups/keep.txt")
 
 			g.Assert(result.Files).Equal(1)
+		})
+
+		g.It("matches a trailing-slash pattern per file, exactly as the archiver does", func() {
+			writeTestFile(g, fs, "backups/keep.txt", "keep\n")
+			writeTestFile(g, fs, "world/level.dat", "level\n")
+
+			// The matcher only recognises "backups/" as a directory pattern when
+			// the path it is given also ends in a slash, and the walk offers it
+			// the bare relative path. The directory is therefore descended into
+			// and every entry is matched individually, so a negation inside it
+			// does take effect. The archiver matches the very same way, and the
+			// fingerprint must agree with the archiver about what a backup would
+			// contain, so this parity is the behaviour worth pinning down...
+			result := fingerprintOf(g, fs, "backups/\n!backups/keep.txt")
+
+			g.Assert(result.Files).Equal(2)
+		})
+
+		g.It("changes when a symlink is retargeted", func() {
+			writeTestFile(g, fs, "target-a", "a\n")
+			writeTestFile(g, fs, "target-b", "b\n")
+
+			// Inode timestamps come from a coarse clock that only advances once
+			// per kernel tick, so the two links would otherwise be created in the
+			// same instant. Backdating the first stands in for the hours that
+			// pass between a real backup and a later retarget...
+			link := filepath.Join(rfs.root, "server", "link")
+			g.Assert(os.Symlink(filepath.Join(rfs.root, "server", "target-a"), link)).IsNil()
+			backdateSymlink(g, link)
+			before := fingerprintOf(g, fs, "")
+
+			g.Assert(os.Remove(link)).IsNil()
+			g.Assert(os.Symlink(filepath.Join(rfs.root, "server", "target-b"), link)).IsNil()
+			after := fingerprintOf(g, fs, "")
+
+			g.Assert(before.Fingerprint != after.Fingerprint).IsTrue()
 		})
 
 		g.It("changes when an empty directory is added", func() {
