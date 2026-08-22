@@ -113,6 +113,31 @@ func (olm *OutputLineMatcher) String() string {
 	return string(olm.raw)
 }
 
+// Extract returns the named capture groups from the first match of the
+// matcher's regex against s. It returns nil for a plain substring matcher
+// (no regex) or when the line does not match, so callers must treat a nil
+// result as "no structured data available".
+func (olm *OutputLineMatcher) Extract(s []byte) map[string]string {
+	if olm.reg == nil {
+		return nil
+	}
+
+	match := olm.reg.FindSubmatch(s)
+	if match == nil {
+		return nil
+	}
+
+	groups := make(map[string]string)
+	for i, name := range olm.reg.SubexpNames() {
+		if i == 0 || name == "" {
+			continue
+		}
+		groups[name] = string(match[i])
+	}
+
+	return groups
+}
+
 // UnmarshalJSON unmarshals the startup lines into individual structs for easier
 // matching abilities.
 func (olm *OutputLineMatcher) UnmarshalJSON(data []byte) error {
@@ -151,6 +176,40 @@ type ProcessConfiguration struct {
 	} `json:"startup"`
 	Stop               ProcessStopConfiguration   `json:"stop"`
 	ConfigurationFiles []parser.ConfigurationFile `json:"configs"`
+	PlayerEvents       PlayerEventConfiguration   `json:"player_events"`
+}
+
+// PlayerEventConfiguration is the panel-served set of console-line matchers
+// used to detect player joins and failed joins. Wings evaluates these but
+// knows nothing about their meaning; the panel owns every pattern.
+type PlayerEventConfiguration struct {
+	Join       []*OutputLineMatcher `json:"join"`
+	FailedJoin []*FailedJoinMatcher `json:"failed_join"`
+}
+
+// FailedJoinMatcher pairs a console-line matcher with the panel's reason code
+// for the rejection it represents. Matchers are evaluated in the order the
+// panel sends them, so the panel places its catch-all last.
+type FailedJoinMatcher struct {
+	Code    string
+	Matcher *OutputLineMatcher
+}
+
+// UnmarshalJSON reads the panel's {"code": "...", "match": "..."} shape,
+// reusing OutputLineMatcher's own unmarshalling for the match expression.
+func (f *FailedJoinMatcher) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Code  string             `json:"code"`
+		Match *OutputLineMatcher `json:"match"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	f.Code = raw.Code
+	f.Matcher = raw.Match
+
+	return nil
 }
 
 type BackupRemoteUploadResponse struct {
@@ -184,4 +243,20 @@ type CrashReportRequest struct {
 	OOMKilled     bool      `json:"oom_killed"`
 	UptimeSeconds int64     `json:"uptime_seconds"`
 	OccurredAt    time.Time `json:"occurred_at"`
+}
+
+// PlayerEventRequest is one detected player join or failed join, sent to the
+// Panel in batches. Code and Reason are populated only for failed joins.
+type PlayerEventRequest struct {
+	Event      string    `json:"event"`
+	Code       string    `json:"code,omitempty"`
+	Player     string    `json:"player"`
+	Reason     string    `json:"reason,omitempty"`
+	Line       string    `json:"line"`
+	OccurredAt time.Time `json:"occurred_at"`
+}
+
+// PlayerEventBatch is the body of a player-events callback.
+type PlayerEventBatch struct {
+	Events []PlayerEventRequest `json:"events"`
 }

@@ -113,6 +113,19 @@ func (c *client) ReportCrash(ctx context.Context, uuid string, data CrashReportR
 	return nil
 }
 
+// SendPlayerEvents posts a batch of detected player join and failed-join
+// events to the Panel. Failures are the caller's concern; player-event
+// reporting is best effort and must never affect the server itself.
+func (c *client) SendPlayerEvents(ctx context.Context, uuid string, events []PlayerEventRequest) error {
+	resp, err := c.Post(ctx, fmt.Sprintf("/servers/%s/player-events", uuid), PlayerEventBatch{Events: events})
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+
+	return nil
+}
+
 func (c *client) SetArchiveStatus(ctx context.Context, uuid string, successful bool) error {
 	resp, err := c.Post(ctx, fmt.Sprintf("/servers/%s/archive", uuid), d{"successful": successful})
 	if err != nil {
