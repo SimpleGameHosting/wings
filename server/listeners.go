@@ -188,6 +188,9 @@ func (s *Server) onConsoleOutput(data []byte) {
 	// set the server to be in a stopping state, otherwise crash detection will kick in and
 	// cause the server to unexpectedly restart on the user.
 	if s.IsRunning() {
+		// Detect player joins and failed joins from running-server output.
+		s.matchAndBufferPlayerEvents(processConfiguration, v)
+
 		stop := processConfiguration.Stop
 
 		if stop.Type == remote.ProcessStopCommand && bytes.Equal(v, []byte(stop.Value)) {

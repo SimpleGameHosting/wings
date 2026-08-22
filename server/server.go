@@ -43,6 +43,9 @@ type Server struct {
 	// The crash handler for this server instance.
 	crasher CrashHandler
 
+	// Buffered player join and failed-join events awaiting the next cron drain.
+	playerEvents playerEventBuffer
+
 	resources   resourceTracker
 	Environment environment.ProcessEnvironment `json:"-"`
 
