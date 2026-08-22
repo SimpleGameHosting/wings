@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -96,12 +97,15 @@ func TestServer_DrainPlayerEvents_EmptyReturnsNil(t *testing.T) {
 func TestServer_RecordPlayerEvent_RateLimited(t *testing.T) {
 	s := &Server{}
 	proc := procWithPlayerEvents(t)
+	// Each iteration uses a distinct player so every buffered event gets its
+	// own dedupe key; only the rate limiter, not dedupe, can shrink the count.
 	for i := 0; i < playerEventMaxPerMinute+5; i++ {
-		s.matchAndBufferPlayerEvents(proc, []byte("Disconnecting Bob (/1.2.3.4:5): reason number "+string(rune('a'+i))))
+		line := fmt.Sprintf("Disconnecting Player%02d (/1.2.3.4:5): You are not whitelisted on this server!", i)
+		s.matchAndBufferPlayerEvents(proc, []byte(line))
 	}
 
 	events := s.DrainPlayerEvents()
-	assert.LessOrEqual(t, len(events), playerEventMaxPerMinute)
+	assert.Len(t, events, playerEventMaxPerMinute)
 }
 
 func TestServer_OnConsoleOutput_BuffersPlayerEventsWhileRunning(t *testing.T) {
