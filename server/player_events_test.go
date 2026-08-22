@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -76,6 +77,43 @@ func TestServer_MatchAndBufferPlayerEvents_IgnoresUnmatchedAndEmptyConfig(t *tes
 
 	s.matchAndBufferPlayerEvents(nil, []byte("Bob joined the game"))
 	assert.Nil(t, s.DrainPlayerEvents())
+}
+
+func TestServer_MatchAndBufferPlayerEvents_TruncatesLongReason(t *testing.T) {
+	s := &Server{}
+	// A hostile or verbose plugin/mod kick message can push the catch-all
+	// "reason" capture group well past the panel's 255-char column width;
+	// the whole batch is 422-rejected (and lost) if it is not clamped here.
+	longReason := strings.Repeat("x", 300)
+	line := fmt.Sprintf("Disconnecting Alex (/1.2.3.4:5): %s", longReason)
+	s.matchAndBufferPlayerEvents(procWithPlayerEvents(t), []byte(line))
+
+	events := s.DrainPlayerEvents()
+	require.Len(t, events, 1)
+	assert.Equal(t, "rejected", events[0].Code)
+	assert.Equal(t, "Alex", events[0].Player)
+	assert.Len(t, events[0].Reason, 255)
+	assert.Equal(t, longReason[:255], events[0].Reason)
+}
+
+func TestTruncatePlayerEventReason(t *testing.T) {
+	assert.Equal(t, "short", truncatePlayerEventReason("short"))
+
+	long := strings.Repeat("y", playerEventReasonMax+10)
+	truncated := truncatePlayerEventReason(long)
+	assert.Len(t, truncated, playerEventReasonMax)
+	assert.Equal(t, long[:playerEventReasonMax], truncated)
+}
+
+func TestTruncatePlayerEventCode(t *testing.T) {
+	// Codes are panel-configured rather than free text, so this guards a
+	// defensive bound rather than a scenario expected in practice.
+	assert.Equal(t, "short", truncatePlayerEventCode("short"))
+
+	long := strings.Repeat("z", playerEventCodeMax+10)
+	truncated := truncatePlayerEventCode(long)
+	assert.Len(t, truncated, playerEventCodeMax)
+	assert.Equal(t, long[:playerEventCodeMax], truncated)
 }
 
 func TestServer_DrainPlayerEvents_DedupesIdenticalWithinBatch(t *testing.T) {

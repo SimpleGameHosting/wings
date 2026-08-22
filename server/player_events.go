@@ -17,6 +17,18 @@ const playerEventMaxPerMinute = 20
 // the panel's player_join_failures.line column width.
 const playerEventLineMax = 512
 
+// playerEventReasonMax is the longest failed-join reason stored on an event,
+// matching the panel's player_join_failures.reason column width. The panel
+// rejects the whole batch outright when a reason is over length, so this
+// must be enforced before the event is buffered.
+const playerEventReasonMax = 255
+
+// playerEventCodeMax is the longest failed-join code stored on an event,
+// matching the panel's player_join_failures.code column width. Codes are
+// sourced from the panel's own egg configuration, so this bound is
+// defensive rather than one expected to trigger in practice.
+const playerEventCodeMax = 32
+
 // playerEventBuffer holds the player events detected for one server between
 // cron drains, behind its own lock and rate limiter.
 type playerEventBuffer struct {
@@ -74,9 +86,9 @@ func (s *Server) matchAndBufferPlayerEvents(cfg *remote.ProcessConfiguration, li
 		groups := m.Matcher.Extract(v)
 		s.recordPlayerEvent(remote.PlayerEventRequest{
 			Event:      "failed_join",
-			Code:       m.Code,
+			Code:       truncatePlayerEventCode(m.Code),
 			Player:     groups["player"],
-			Reason:     groups["reason"],
+			Reason:     truncatePlayerEventReason(groups["reason"]),
 			Line:       truncatePlayerEventLine(v),
 			OccurredAt: time.Now(),
 		})
@@ -148,4 +160,27 @@ func truncatePlayerEventLine(line []byte) string {
 	}
 
 	return string(line)
+}
+
+// truncatePlayerEventReason trims a failed-join reason to the stored maximum
+// length. The catch-all failed-join pattern captures the rest of the console
+// line as the reason, so a verbose plugin or mod kick message must be
+// clamped here before the panel ever sees it.
+func truncatePlayerEventReason(reason string) string {
+	if len(reason) > playerEventReasonMax {
+		return reason[:playerEventReasonMax]
+	}
+
+	return reason
+}
+
+// truncatePlayerEventCode trims a failed-join code to the stored maximum
+// length. Codes come from the panel's own egg configuration, so this is a
+// defensive bound rather than one expected to trigger in practice.
+func truncatePlayerEventCode(code string) string {
+	if len(code) > playerEventCodeMax {
+		return code[:playerEventCodeMax]
+	}
+
+	return code
 }
