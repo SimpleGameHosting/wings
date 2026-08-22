@@ -41,6 +41,11 @@ func Scheduler(ctx context.Context, m *server.Manager) (*gocron.Scheduler, error
 		max:     config.Get().System.ActivitySendCount,
 	}
 
+	playerEvents := playerEventsCron{
+		mu:      system.NewAtomicBool(false),
+		manager: m,
+	}
+
 	s := gocron.NewScheduler(location)
 	l := log.WithField("subsystem", "cron")
 
@@ -65,6 +70,16 @@ func Scheduler(ctx context.Context, m *server.Manager) (*gocron.Scheduler, error
 				l.WithField("cron", "sftp").Warn("sftp events process already running, skipping...")
 			} else {
 				l.WithField("cron", "sftp").WithField("error", err).Error("sftp events process failed to execute")
+			}
+		}
+	})
+
+	_, _ = s.Tag("player-events").Every(5 * time.Second).Do(func() {
+		if err := playerEvents.Run(ctx); err != nil {
+			if errors.Is(err, ErrCronRunning) {
+				l.WithField("cron", "player-events").Warn("player events process is already running, skipping...")
+			} else {
+				l.WithField("cron", "player-events").WithField("error", err).Error("player events process failed to execute")
 			}
 		}
 	})

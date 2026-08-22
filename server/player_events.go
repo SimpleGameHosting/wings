@@ -132,6 +132,15 @@ func (s *Server) DrainPlayerEvents() []remote.PlayerEventRequest {
 	return deduped
 }
 
+// SeedPlayerEventForTest appends an event directly to the buffer, bypassing
+// matching and the rate limit. It exists so cron tests can stage buffered
+// events without synthesising console output.
+func (s *Server) SeedPlayerEventForTest(event remote.PlayerEventRequest) {
+	s.playerEvents.mu.Lock()
+	defer s.playerEvents.mu.Unlock()
+	s.playerEvents.events = append(s.playerEvents.events, event)
+}
+
 // truncatePlayerEventLine trims a console line to the stored maximum length.
 func truncatePlayerEventLine(line []byte) string {
 	if len(line) > playerEventLineMax {
