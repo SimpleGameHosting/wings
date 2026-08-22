@@ -74,3 +74,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: the panel skips automated backups whose content has not changed (spec: panel repo, docs/superpowers/specs/2026-08-22-backup-content-fingerprint-design.md); the previous disk-usage fingerprint could neither ignore log churn nor detect same-size edits.
 - Files: `server/filesystem/fingerprint.go`, `server/filesystem/fingerprint_test.go`, `router/router_server_fingerprint.go`, `router/router.go`.
 - Conflict risk on rebase: low; two new files plus one appended route line.
+
+### remote/server: player events panel callback
+
+- What: matches running-server console lines against panel-served `player_events` regexes (join and failed-join with named `player`/`reason` groups), buffers them per server under a 20/min rate limit, and posts batches to `POST /servers/{uuid}/player-events` every 5s via a new `playerEventsCron`.
+- Why: the panel's friction checkpoints need authoritative first-connection and failed-join detection (spec: panel repo, docs/superpowers/specs/2026-08-22-friction-checkpoints-design.md).
+- Files: `remote/types.go`, `remote/http.go`, `remote/servers.go`, `remote/types_test.go`, `remote/servers_test.go`, `remote/player_events_fixture_test.go`, `remote/testdata/player_events_minecraft_java.json`, `server/player_events.go`, `server/player_events_test.go`, `server/server.go`, `server/listeners.go`, `internal/cron/player_events_cron.go`, `internal/cron/cron.go`, `internal/cron/player_events_cron_test.go`.
+- Conflict risk on rebase: low-medium. `ProcessConfiguration` and `onConsoleOutput` are upstream types; a `player_events` field and one call line are additive. `internal/cron/cron.go` gains one scheduled job next to the existing two.
