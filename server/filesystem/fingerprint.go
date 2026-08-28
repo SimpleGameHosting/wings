@@ -5,9 +5,9 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	iofs "io/fs"
-	"sort"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,7 +80,7 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 		}
 
 		if d.IsDir() {
-			digests = append(digests, sha256.Sum256([]byte(fingerprintEntryLine(relative, "dir"))))
+			digests = append(digests, hashEntry(relative, "dir"))
 			return nil
 		}
 
@@ -93,8 +93,7 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 				return err
 			}
 
-			line := fmt.Sprintf("%s\x00symlink\x00%d\n", relative, info.ModTime().UnixNano())
-			digests = append(digests, sha256.Sum256([]byte(line)))
+			digests = append(digests, hashEntry(relative, "symlink", info.ModTime().UnixNano()))
 
 			return nil
 		}
@@ -104,8 +103,9 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 			return err
 		}
 
-		line := fmt.Sprintf("%s\x00%d\x00%d\n", relative, info.Size(), info.ModTime().UnixNano())
-		digests = append(digests, sha256.Sum256([]byte(line)))
+		// A file carries no kind token: its size takes that slot, so the line reads
+		// "path\x00size\x00mtime\n"...
+		digests = append(digests, hashEntry(relative, "", info.Size(), info.ModTime().UnixNano()))
 		files++
 
 		return nil
@@ -121,8 +121,8 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 	// never changed. Sorting the entry digests before folding them together
 	// removes that variable, so the fingerprint only ever changes when the
 	// file set does...
-	sort.Slice(digests, func(i, j int) bool {
-		return bytes.Compare(digests[i][:], digests[j][:]) < 0
+	slices.SortFunc(digests, func(a, b [sha256.Size]byte) int {
+		return bytes.Compare(a[:], b[:])
 	})
 
 	digest := sha256.New()
@@ -137,8 +137,33 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 	}, nil
 }
 
-// fingerprintEntryLine formats an entry that carries no size or mtime of its
-// own, so that additions and removals of directories are still detected.
-func fingerprintEntryLine(relative, kind string) string {
-	return fmt.Sprintf("%s\x00%s\n", relative, kind)
+// hashEntry reduces one walked entry to its fixed-size digest. Building the
+// line with append instead of fmt keeps the per-entry cost to one small
+// allocation even on trees with hundreds of thousands of entries.
+//
+// The line is the entry's path, then an optional kind token, then each number,
+// all NUL-separated and closed by a newline. A file passes an empty kind so its
+// size occupies that slot, which is what reproduces the three layouts the
+// fingerprint has always used: "path\x00size\x00mtime\n" for a file,
+// "path\x00dir\n" for a directory and "path\x00symlink\x00mtime\n" for a
+// symlink. These bytes are the fingerprint's on-the-wire format across panel
+// comparisons, so they must never change without invalidating every stored
+// fingerprint.
+func hashEntry(relative, kind string, numbers ...int64) [sha256.Size]byte {
+	line := make([]byte, 0, len(relative)+len(kind)+2+len(numbers)*21)
+	line = append(line, relative...)
+
+	if kind != "" {
+		line = append(line, 0)
+		line = append(line, kind...)
+	}
+
+	for _, n := range numbers {
+		line = append(line, 0)
+		line = strconv.AppendInt(line, n, 10)
+	}
+
+	line = append(line, '\n')
+
+	return sha256.Sum256(line)
 }

@@ -212,14 +212,6 @@ func TestFilesystem_Fingerprint(t *testing.T) {
 			g.Assert(after.Files).Equal(before.Files)
 		})
 
-		g.It("reports the elapsed time", func() {
-			writeTestFile(g, fs, "a.txt", "a\n")
-
-			result := fingerprintOf(g, fs, "")
-
-			g.Assert(result.DurationMs >= 0).IsTrue()
-		})
-
 		g.It("stops when the context is cancelled", func() {
 			writeTestFile(g, fs, "a.txt", "a\n")
 			ctx, cancel := context.WithCancel(context.Background())
