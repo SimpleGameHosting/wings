@@ -1,5 +1,5 @@
 {
-  "version": "rules:v1",
+  "version": "rules:v2",
   "game": "minecraft-java",
   "patterns": {
     "join": [
@@ -7,20 +7,138 @@
       "regex:(?P<player>[A-Za-z0-9_]{3,16}) joined the game"
     ],
     "failed_join": [
-      {"code": "not_whitelisted", "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): You are not white-?listed on this server!"},
-      {"code": "banned", "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): You are banned from this server"},
-      {"code": "server_full", "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): The server is full!"},
-      {"code": "auth_failed", "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): Failed to verify username!"},
-      {"code": "rejected", "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): (?P<reason>.+)$"}
+      {
+        "code": "not_whitelisted",
+        "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): You are not white-?listed on this server!"
+      },
+      {
+        "code": "banned",
+        "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): You are banned from this server"
+      },
+      {
+        "code": "server_full",
+        "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): The server is full!"
+      },
+      {
+        "code": "auth_failed",
+        "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): Failed to verify username!"
+      },
+      {
+        "code": "not_whitelisted",
+        "match": "regex:Disconnecting com\\.mojang\\.authlib\\.GameProfile@[^\\[]+\\[id=[^,]*,name=(?P<player>[A-Za-z0-9_]{1,16}),[^\\]]*\\] \\(/[^)]+\\): You are not white-?listed on this server!"
+      },
+      {
+        "code": "banned",
+        "match": "regex:Disconnecting com\\.mojang\\.authlib\\.GameProfile@[^\\[]+\\[id=[^,]*,name=(?P<player>[A-Za-z0-9_]{1,16}),[^\\]]*\\] \\(/[^)]+\\): You are banned from this server"
+      },
+      {
+        "code": "server_full",
+        "match": "regex:Disconnecting com\\.mojang\\.authlib\\.GameProfile@[^\\[]+\\[id=[^,]*,name=(?P<player>[A-Za-z0-9_]{1,16}),[^\\]]*\\] \\(/[^)]+\\): The server is full!"
+      },
+      {
+        "code": "auth_failed",
+        "match": "regex:Disconnecting com\\.mojang\\.authlib\\.GameProfile@[^\\[]+\\[id=[^,]*,name=(?P<player>[A-Za-z0-9_]{1,16}),[^\\]]*\\] \\(/[^)]+\\): Failed to verify username!"
+      },
+      {
+        "code": "mods_required",
+        "match": "regex:Disconnecting Player: This server has mods that require FML/Forge to be installed on the client"
+      },
+      {
+        "code": "mods_required",
+        "match": "regex:Disconnecting VANILLA connection attempt: This server has mods that require Forge to be installed on the client"
+      },
+      {
+        "code": "rejected",
+        "match": "regex:Disconnecting com\\.mojang\\.authlib\\.GameProfile@[^\\[]+\\[id=[^,]*,name=(?P<player>[A-Za-z0-9_]{1,16}),[^\\]]*\\] \\(/[^)]+\\): (?P<reason>.+)$"
+      },
+      {
+        "code": "rejected",
+        "match": "regex:Disconnecting (?P<player>[A-Za-z0-9_]{3,16}) \\(/[^)]+\\): (?P<reason>.+)$"
+      }
     ]
   },
   "samples": [
-    {"line": "[17:44:02 INFO]: Bob[/172.17.0.1:58786] logged in with entity id 124 at (0.5, 64.0, 0.5)", "event": "join", "player": "Bob"},
-    {"line": "[17:44:02 INFO]: Bob joined the game", "event": "join", "player": "Bob"},
-    {"line": "[17:42:48 INFO]: Disconnecting Sam (/172.17.0.1:58774): You are not whitelisted on this server!", "event": "failed_join", "code": "not_whitelisted", "player": "Sam"},
-    {"line": "[17:43:19 INFO]: Disconnecting Bob (/172.17.0.1:60538): You are banned from this server.", "event": "failed_join", "code": "banned", "player": "Bob"},
-    {"line": "[18:01:10 INFO]: Disconnecting Alex (/172.17.0.1:41000): The server is full!", "event": "failed_join", "code": "server_full", "player": "Alex"},
-    {"line": "[18:02:22 INFO]: Disconnecting Alex (/172.17.0.1:41002): Failed to verify username!", "event": "failed_join", "code": "auth_failed", "player": "Alex"},
-    {"line": "[18:03:00 INFO]: Disconnecting Alex (/172.17.0.1:41004): Some other future reason", "event": "failed_join", "code": "rejected", "player": "Alex", "reason": "Some other future reason"}
+    {
+      "line": "[17:44:02 INFO]: Bob[/172.17.0.1:58786] logged in with entity id 124 at (0.5, 64.0, 0.5)",
+      "event": "join",
+      "player": "Bob"
+    },
+    {
+      "line": "[17:44:02 INFO]: Bob joined the game",
+      "event": "join",
+      "player": "Bob"
+    },
+    {
+      "line": "[17:42:48 INFO]: Disconnecting Sam (/172.17.0.1:58774): You are not whitelisted on this server!",
+      "event": "failed_join",
+      "code": "not_whitelisted",
+      "player": "Sam"
+    },
+    {
+      "line": "[17:43:19 INFO]: Disconnecting Bob (/172.17.0.1:60538): You are banned from this server.",
+      "event": "failed_join",
+      "code": "banned",
+      "player": "Bob"
+    },
+    {
+      "line": "[18:01:10 INFO]: Disconnecting Alex (/172.17.0.1:41000): The server is full!",
+      "event": "failed_join",
+      "code": "server_full",
+      "player": "Alex"
+    },
+    {
+      "line": "[18:02:22 INFO]: Disconnecting Alex (/172.17.0.1:41002): Failed to verify username!",
+      "event": "failed_join",
+      "code": "auth_failed",
+      "player": "Alex"
+    },
+    {
+      "line": "[18:03:00 INFO]: Disconnecting Alex (/172.17.0.1:41004): Some other future reason",
+      "event": "failed_join",
+      "code": "rejected",
+      "player": "Alex",
+      "reason": "Some other future reason"
+    },
+    {
+      "line": "[19:29:01] [Server thread/INFO]: Disconnecting com.mojang.authlib.GameProfile@e1ae4b5[id=640ed737-07b7-338e-bd51-8ea41a5200e6,name=ProbeWL,properties={},legacy=false] (/172.17.0.1:56836): You are not white-listed on this server!",
+      "event": "failed_join",
+      "code": "not_whitelisted",
+      "player": "ProbeWL"
+    },
+    {
+      "line": "[19:33:01] [Server thread/INFO]: Disconnecting com.mojang.authlib.GameProfile@254712b4[id=640ed737-07b7-338e-bd51-8ea41a5200e6,name=ProbeWL,properties={},legacy=false] (/172.17.0.1:56328): You are banned from this server!",
+      "event": "failed_join",
+      "code": "banned",
+      "player": "ProbeWL"
+    },
+    {
+      "line": "[12:00:00] [Server thread/INFO]: Disconnecting com.mojang.authlib.GameProfile@1a2b3c4d[id=00000000-0000-3000-8000-000000000001,name=Alex,properties={},legacy=false] (/10.0.0.9:52000): The server is full!",
+      "event": "failed_join",
+      "code": "server_full",
+      "player": "Alex"
+    },
+    {
+      "line": "[12:00:05] [Server thread/INFO]: Disconnecting com.mojang.authlib.GameProfile@5e6f7a8b[id=00000000-0000-3000-8000-000000000002,name=Alex,properties={},legacy=false] (/10.0.0.9:52002): Failed to verify username!",
+      "event": "failed_join",
+      "code": "auth_failed",
+      "player": "Alex"
+    },
+    {
+      "line": "[19:17:38] [Netty Epoll Server IO #1/INFO] [FML]: Disconnecting Player: This server has mods that require FML/Forge to be installed on the client: [Advanced Fishing, Aquaculture, Baubles, Ice and Fire, Lycanites Mobs]",
+      "event": "failed_join",
+      "code": "mods_required"
+    },
+    {
+      "line": "[19:31:20] [Netty Epoll Server IO #7/INFO] [ne.mi.se.ServerLifecycleHooks/SERVERHOOKS]: [/172.17.0.1:63686] Disconnecting VANILLA connection attempt: This server has mods that require Forge to be installed on the client. Contact your server admin for more details.",
+      "event": "failed_join",
+      "code": "mods_required"
+    },
+    {
+      "line": "[12:01:00] [Server thread/INFO]: Disconnecting com.mojang.authlib.GameProfile@9c0d1e2f[id=00000000-0000-3000-8000-000000000003,name=Alex,properties={},legacy=false] (/10.0.0.9:52004): Some era-specific reason",
+      "event": "failed_join",
+      "code": "rejected",
+      "player": "Alex",
+      "reason": "Some era-specific reason"
+    }
   ]
 }
