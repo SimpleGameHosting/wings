@@ -1,5 +1,5 @@
 {
-  "version": "rules:v2",
+  "version": "rules:v3",
   "game": "minecraft-java",
   "patterns": {
     "join": [
@@ -46,6 +46,34 @@
       {
         "code": "mods_required",
         "match": "regex:Disconnecting VANILLA connection attempt: This server has mods that require Forge to be installed on the client"
+      },
+      {
+        "code": "mods_required",
+        "match": "regex:GameProfile@[^\\[]+\\[id=[^,]*,name=(?P<player>[A-Za-z0-9_]{1,16}),[^\\]]*\\] lost connection: You are trying to connect to a server that is running NeoForge"
+      },
+      {
+        "code": "mods_required",
+        "match": "regex:GameProfile@[^\\[]+\\[id=[^,]*,name=(?P<player>[A-Za-z0-9_]{1,16}),[^\\]]*\\] lost connection: This server requires Fabric"
+      },
+      {
+        "code": "mod_mismatch",
+        "match": "regex:Rejecting connection CLIENT: "
+      },
+      {
+        "code": "mod_mismatch",
+        "match": "regex:Terminating connection with client, mismatched (mod|channel) list"
+      },
+      {
+        "code": "mod_mismatch",
+        "match": "regex:Disconnecting MODDED connection attempt: (?P<reason>.+)$"
+      },
+      {
+        "code": "proxy_forwarding",
+        "match": "regex:lost connection: If you wish to use IP forwarding, please enable it in your BungeeCord config as well!"
+      },
+      {
+        "code": "proxy_forwarding",
+        "match": "regex:lost connection: Unknown data in login hostname, did you forget to enable BungeeCord in spigot.yml\\?"
       },
       {
         "code": "rejected",
@@ -139,6 +167,49 @@
       "code": "rejected",
       "player": "Alex",
       "reason": "Some era-specific reason"
+    },
+    {
+      "line": "[12:10:00] [Server thread/INFO] [minecraft/ServerConfigurationPacketListenerImpl]: com.mojang.authlib.GameProfile@1fa2b3c4[id=00000000-0000-4000-8000-00000000000a,name=Alex,properties={},legacy=false] lost connection: You are trying to connect to a server that is running NeoForge, but you are not. Please install NeoForge Version: 21.1.249 to connect to this server.",
+      "event": "failed_join",
+      "code": "mods_required",
+      "player": "Alex"
+    },
+    {
+      "line": "[12:10:05] [Server thread/INFO]: com.mojang.authlib.GameProfile@5b6c7d8e[id=00000000-0000-4000-8000-00000000000b,name=Alex,properties={},legacy=false] lost connection: This server requires Fabric API installed on your client!",
+      "event": "failed_join",
+      "code": "mods_required",
+      "player": "Alex"
+    },
+    {
+      "line": "[12:10:10] [Netty Epoll Server IO #2/INFO] [FML]: Rejecting connection CLIENT: IceAndFire: Requires version 1.9.1 but client has 1.8.4.",
+      "event": "failed_join",
+      "code": "mod_mismatch"
+    },
+    {
+      "line": "[12:10:15] [Netty Epoll Server IO #3/ERROR] [ne.mi.ne.HandshakeHandler/FMLHANDSHAKE]: Terminating connection with client, mismatched mod list",
+      "event": "failed_join",
+      "code": "mod_mismatch"
+    },
+    {
+      "line": "[12:10:16] [Netty Epoll Server IO #3/ERROR] [ne.mi.ne.re.ForgePacketHandler/]: Terminating connection with client, mismatched channel list",
+      "event": "failed_join",
+      "code": "mod_mismatch"
+    },
+    {
+      "line": "[12:10:20] [Netty Epoll Server IO #4/INFO] [ne.mi.se.ServerLifecycleHooks/SERVERHOOKS]: [/10.0.0.7:52810] Disconnecting MODDED connection attempt: This modded server is not network compatible with your modded client. Please verify your Forge version closely matches the server. Got net version 3 this server is net version 2",
+      "event": "failed_join",
+      "code": "mod_mismatch",
+      "reason": "This modded server is not network compatible with your modded client. Please verify your Forge version closely matches the server. Got net version 3 this server is net version 2"
+    },
+    {
+      "line": "[12:10:25] [Server thread/INFO]: /10.0.0.8:52812 lost connection: If you wish to use IP forwarding, please enable it in your BungeeCord config as well!",
+      "event": "failed_join",
+      "code": "proxy_forwarding"
+    },
+    {
+      "line": "[12:10:30] [Server thread/INFO]: /10.0.0.8:52814 lost connection: Unknown data in login hostname, did you forget to enable BungeeCord in spigot.yml?",
+      "event": "failed_join",
+      "code": "proxy_forwarding"
     }
   ]
 }
