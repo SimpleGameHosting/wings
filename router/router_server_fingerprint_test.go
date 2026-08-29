@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +27,11 @@ func newFingerprintContext(t *testing.T, requestContext context.Context) (*gin.C
 	previous := config.Get()
 	next := *previous
 	next.System.Data = t.TempDir()
+
+	// Chown written files to the test process itself so the filesystem layer
+	// does not need root (CI runners are unprivileged).
+	next.System.User.Uid = os.Getuid()
+	next.System.User.Gid = os.Getgid()
 	config.Set(&next)
 	t.Cleanup(func() {
 		config.Set(previous)
