@@ -17,7 +17,7 @@ jobs:
   check:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
         with:
           fetch-depth: 0
       - name: Compare against upstream
@@ -28,12 +28,16 @@ jobs:
           set -euo pipefail
           git remote add upstream https://github.com/pterodactyl/wings.git
           git fetch upstream --tags
-          BASE=$(grep -oE 'Base: upstream `?develop`? @ `?[0-9a-f]+' SGH-PATCHES.md | grep -oE '[0-9a-f]{7,}$' || true)
+          BASE=$(sed -nE 's/^Base: upstream .* @ ([0-9a-f]{7,40}).*/\1/p' SGH-PATCHES.md)
           if [ -z "$BASE" ]; then
             echo "could not extract pinned base from SGH-PATCHES.md"
             exit 1
           fi
-          LATEST_TAG=$(git tag --sort=-creatordate | grep -E '^v[0-9]' | grep -v sgh | head -1)
+          LATEST_TAG=$(git tag --sort=-version:refname 'v[0-9]*' | grep -v -- '-sgh\.' | sed -n '1p')
+          if [ -z "$LATEST_TAG" ]; then
+            echo "could not determine latest upstream release tag"
+            exit 1
+          fi
           NEW_COMMITS=$(git rev-list --count "${BASE}"..upstream/develop || echo "unknown")
           if [ "${NEW_COMMITS}" != "0" ] && [ "${NEW_COMMITS}" != "unknown" ]; then
             TITLE="upstream activity: ${NEW_COMMITS} new commits past pinned base"

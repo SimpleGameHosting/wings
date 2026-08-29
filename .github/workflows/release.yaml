@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - "v*"
+      - "v*-sgh.*"
 
 jobs:
   release:
@@ -20,20 +20,32 @@ jobs:
         with:
           go-version: "1.25.14"
 
+      - name: Verify source
+        run: |
+          files="$(gofmt -l .)"
+          if [ -n "${files}" ]; then
+            echo "The following files are not formatted:"
+            echo "${files}"
+            exit 1
+          fi
+          go vet ./...
+          go test -race ./...
+
       - name: Build release binaries
         env:
           CGO_ENABLED: 0
+          VERSION: ${{ github.ref_name }}
         run: |
-          GOARCH=amd64 go build -o dist/wings_linux_amd64 -v -trimpath -ldflags="-s -w -X github.com/pterodactyl/wings/system.Version=${{ github.ref_name }}" github.com/pterodactyl/wings
+          mkdir -p dist
+          VERSION="${VERSION#v}"
+          GOARCH=amd64 go build -o dist/wings_linux_amd64 -v -trimpath -ldflags="-s -w -X github.com/pterodactyl/wings/system.Version=${VERSION}" github.com/pterodactyl/wings
           chmod 755 dist/wings_linux_amd64
-          GOARCH=arm64 go build -o dist/wings_linux_arm64 -v -trimpath -ldflags="-s -w -X github.com/pterodactyl/wings/system.Version=${{ github.ref_name }}" github.com/pterodactyl/wings
+          GOARCH=arm64 go build -o dist/wings_linux_arm64 -v -trimpath -ldflags="-s -w -X github.com/pterodactyl/wings/system.Version=${VERSION}" github.com/pterodactyl/wings
           chmod 755 dist/wings_linux_arm64
 
       - name: Create checksums.txt
         run: |
-          SUM=`cd dist && sha256sum wings_linux_amd64`
-          SUM2=`cd dist && sha256sum wings_linux_arm64`
-          echo -e "$SUM\n$SUM2" > checksums.txt
+          (cd dist && sha256sum wings_linux_amd64 wings_linux_arm64) > checksums.txt
 
       - name: Create release
         uses: softprops/action-gh-release@a06a81a03ee405af7f2048a818ed3f03bbf83c7b # v2.5.0

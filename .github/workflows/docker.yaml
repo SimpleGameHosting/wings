@@ -3,7 +3,7 @@ name: Docker
 on:
   push:
     branches:
-      - develop
+      - sgh
   release:
     types:
       - published
@@ -13,7 +13,7 @@ jobs:
     name: Build and Push
     runs-on: ubuntu-24.04
     # Always run against a tag, even if the commit into the tag has [docker skip] within the commit message.
-    if: "!contains(github.ref, 'develop') || (!contains(github.event.head_commit.message, 'skip docker') && !contains(github.event.head_commit.message, 'docker skip'))"
+    if: "github.ref != 'refs/heads/sgh' || (!contains(github.event.head_commit.message, 'skip docker') && !contains(github.event.head_commit.message, 'docker skip'))"
     permissions:
       contents: read
       packages: write
@@ -65,9 +65,9 @@ jobs:
           labels: ${{ steps.docker_meta.outputs.labels }}
           tags: ${{ steps.docker_meta.outputs.tags }}
 
-      - name: Build and Push (develop)
+      - name: Build and Push (sgh)
         uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
-        if: "github.event_name == 'push' && contains(github.ref, 'develop')"
+        if: "github.event_name == 'push' && github.ref == 'refs/heads/sgh'"
         with:
           context: .
           file: ./Dockerfile
