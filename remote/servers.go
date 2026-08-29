@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/pterodactyl/wings/internal/models"
 
@@ -17,6 +18,7 @@ const (
 	ProcessStopCommand    = "command"
 	ProcessStopSignal     = "signal"
 	ProcessStopNativeStop = "stop"
+	playerEventTimeout    = 5 * time.Second
 )
 
 // GetServers returns all the servers that are present on the Panel making
@@ -117,7 +119,10 @@ func (c *client) ReportCrash(ctx context.Context, uuid string, data CrashReportR
 // events to the Panel. Failures are the caller's concern; player-event
 // reporting is best effort and must never affect the server itself.
 func (c *client) SendPlayerEvents(ctx context.Context, uuid string, events []PlayerEventRequest) error {
-	resp, err := c.Post(ctx, fmt.Sprintf("/servers/%s/player-events", uuid), PlayerEventBatch{Events: events})
+	ctx, cancel := context.WithTimeout(ctx, playerEventTimeout)
+	defer cancel()
+
+	resp, err := c.postWithRetries(ctx, fmt.Sprintf("/servers/%s/player-events", uuid), PlayerEventBatch{Events: events}, 1)
 	if err != nil {
 		return err
 	}

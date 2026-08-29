@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -79,4 +80,47 @@ func TestSendPlayerEventsPanelUnavailable(t *testing.T) {
 
 	err := c.SendPlayerEvents(context.Background(), "some-uuid", []PlayerEventRequest{})
 	assert.Error(t, err)
+}
+
+// TestSendPlayerEventsRetriesOnlyOnce ensures best-effort telemetry cannot
+// occupy the shared cron for the generic client's full retry window.
+func TestSendPlayerEventsRetriesOnlyOnce(t *testing.T) {
+	attempts := 0
+	c, server := createTestClient(func(rw http.ResponseWriter, _ *http.Request) {
+		attempts++
+		rw.WriteHeader(http.StatusInternalServerError)
+	})
+	defer server.Close()
+	c.maxAttempts = 2
+
+	err := c.SendPlayerEvents(context.Background(), "some-uuid", []PlayerEventRequest{})
+
+	assert.Error(t, err)
+	assert.Equal(t, 2, attempts)
+}
+
+// TestSendPlayerEventsBoundsDeliveryTime ensures a hung telemetry callback
+// cannot occupy the player-event cron for the generic 30-second retry window.
+func TestSendPlayerEventsBoundsDeliveryTime(t *testing.T) {
+	var remaining time.Duration
+	c := &client{
+		baseUrl: "http://panel.test",
+		httpClient: &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+			deadline, ok := request.Context().Deadline()
+			assert.True(t, ok)
+			remaining = time.Until(deadline)
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		})},
+	}
+
+	err := c.SendPlayerEvents(context.Background(), "some-uuid", []PlayerEventRequest{})
+
+	assert.NoError(t, err)
+	assert.Positive(t, remaining)
+	assert.LessOrEqual(t, remaining, playerEventTimeout)
 }

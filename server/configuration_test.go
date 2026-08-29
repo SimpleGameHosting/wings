@@ -58,7 +58,7 @@ func TestServer_SyncWithConfigurationReplacesSettings(t *testing.T) {
 	}`, proc)
 
 	cfg := s.Config()
-	assert.Equal(t, testServerUUID, cfg.GetUuid())
+	assert.Equal(t, testServerUUID, cfg.Uuid)
 	assert.True(t, cfg.Suspended)
 	assert.Equal(t, "java -jar server.jar", cfg.Invocation)
 	assert.True(t, cfg.CrashDetectionEnabled, "node default must apply when the Panel omits the flag")
@@ -109,8 +109,9 @@ func TestServer_SyncWithConfigurationKeepsWaitersAlive(t *testing.T) {
 					return
 				default:
 					_ = s.DiskSpace()
-					_ = s.Config().GetUuid()
-					s.Config().SetSuspended(false)
+					_ = s.Config().Uuid
+					_ = s.Config().CrashDetectionEnabled
+					s.SetSuspended(false)
 				}
 			}
 		}()
@@ -130,4 +131,35 @@ func TestServer_SyncWithConfigurationKeepsWaitersAlive(t *testing.T) {
 	case <-time.After(10 * time.Second):
 		t.Fatal("goroutines waiting on the configuration lock never woke up after a sync")
 	}
+}
+
+// TestServer_ConfigReturnsIsolatedSnapshot ensures callers cannot mutate live
+// configuration values or their nested maps and slices outside the lock.
+func TestServer_ConfigReturnsIsolatedSnapshot(t *testing.T) {
+	setNodeConfig(t, false)
+	s := &Server{}
+	syncSettings(t, s, `{
+		"uuid": "`+testServerUUID+`",
+		"environment": {"SERVER_JARFILE": "server.jar"},
+		"labels": {"tier": "gold"},
+		"allocations": {"mappings": {"127.0.0.1": [25565]}},
+		"mounts": [{"source": "/maps", "target": "/home/container/maps"}],
+		"egg": {"file_denylist": ["server.properties"]}
+	}`, nil)
+
+	snapshot := s.Config()
+	snapshot.Uuid = "mutated"
+	snapshot.EnvVars["SERVER_JARFILE"] = "mutated.jar"
+	snapshot.Labels["tier"] = "mutated"
+	snapshot.Allocations.Mappings["127.0.0.1"][0] = 19132
+	snapshot.Mounts[0].Source = "/mutated"
+	snapshot.Egg.FileDenylist[0] = "mutated"
+
+	live := s.Config()
+	assert.Equal(t, testServerUUID, live.Uuid)
+	assert.Equal(t, "server.jar", live.EnvVars.Get("SERVER_JARFILE"))
+	assert.Equal(t, "gold", live.Labels["tier"])
+	assert.Equal(t, []int{25565}, live.Allocations.Mappings["127.0.0.1"])
+	assert.Equal(t, "/maps", live.Mounts[0].Source)
+	assert.Equal(t, []string{"server.properties"}, live.Egg.FileDenylist)
 }

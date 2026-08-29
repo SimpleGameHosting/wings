@@ -26,7 +26,7 @@ func postServerFingerprint(c *gin.Context) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(s.Context(), fingerprintDeadline)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), fingerprintDeadline)
 	defer cancel()
 
 	result, err := s.Filesystem().Fingerprint(ctx, data.Ignore)

@@ -120,11 +120,11 @@ func (s *Server) Backup(b backup.BackupInterface) error {
 // In addition to the websocket event an API call is triggered to notify the
 // Panel of the new state.
 func (s *Server) RestoreBackup(b backup.BackupInterface, reader io.ReadCloser) (err error) {
-	s.Config().SetSuspended(true)
+	s.SetSuspended(true)
 	// Local backups will not pass a reader through to this function, so check first
 	// to make sure it is a valid reader before trying to close it.
 	defer func() {
-		s.Config().SetSuspended(false)
+		s.SetSuspended(false)
 		if reader != nil {
 			_ = reader.Close()
 		}

@@ -28,6 +28,10 @@
 
 # Builds by gox
 /build
+/dist
+
+# Repository metadata is not a build input.
+/.git
 
 # Go Coverage tool
 /coverage.out

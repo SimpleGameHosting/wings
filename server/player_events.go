@@ -1,8 +1,10 @@
 package server
 
 import (
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/pterodactyl/wings/remote"
 	"github.com/pterodactyl/wings/system"
@@ -59,7 +61,7 @@ func (s *Server) matchAndBufferPlayerEvents(cfg *remote.ProcessConfiguration, li
 	}
 
 	for _, m := range events.Join {
-		if !m.Matches(v) {
+		if m == nil || !m.Matches(v) {
 			continue
 		}
 
@@ -79,7 +81,7 @@ func (s *Server) matchAndBufferPlayerEvents(cfg *remote.ProcessConfiguration, li
 	}
 
 	for _, m := range events.FailedJoin {
-		if m.Matcher == nil || !m.Matcher.Matches(v) {
+		if m == nil || m.Matcher == nil || !m.Matcher.Matches(v) {
 			continue
 		}
 
@@ -144,22 +146,9 @@ func (s *Server) DrainPlayerEvents() []remote.PlayerEventRequest {
 	return deduped
 }
 
-// SeedPlayerEventForTest appends an event directly to the buffer, bypassing
-// matching and the rate limit. It exists so cron tests can stage buffered
-// events without synthesising console output.
-func (s *Server) SeedPlayerEventForTest(event remote.PlayerEventRequest) {
-	s.playerEvents.mu.Lock()
-	defer s.playerEvents.mu.Unlock()
-	s.playerEvents.events = append(s.playerEvents.events, event)
-}
-
 // truncatePlayerEventLine trims a console line to the stored maximum length.
 func truncatePlayerEventLine(line []byte) string {
-	if len(line) > playerEventLineMax {
-		return string(line[:playerEventLineMax])
-	}
-
-	return string(line)
+	return truncatePlayerEventText(string(line), playerEventLineMax)
 }
 
 // truncatePlayerEventReason trims a failed-join reason to the stored maximum
@@ -167,20 +156,28 @@ func truncatePlayerEventLine(line []byte) string {
 // line as the reason, so a verbose plugin or mod kick message must be
 // clamped here before the panel ever sees it.
 func truncatePlayerEventReason(reason string) string {
-	if len(reason) > playerEventReasonMax {
-		return reason[:playerEventReasonMax]
-	}
-
-	return reason
+	return truncatePlayerEventText(reason, playerEventReasonMax)
 }
 
 // truncatePlayerEventCode trims a failed-join code to the stored maximum
 // length. Codes come from the panel's own egg configuration, so this is a
 // defensive bound rather than one expected to trigger in practice.
 func truncatePlayerEventCode(code string) string {
-	if len(code) > playerEventCodeMax {
-		return code[:playerEventCodeMax]
+	return truncatePlayerEventText(code, playerEventCodeMax)
+}
+
+// truncatePlayerEventText normalizes invalid input and truncates it at a valid
+// UTF-8 boundary no larger than the panel's byte limit.
+func truncatePlayerEventText(value string, maximum int) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if len(value) <= maximum {
+		return value
 	}
 
-	return code
+	value = value[:maximum]
+	for !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+
+	return value
 }

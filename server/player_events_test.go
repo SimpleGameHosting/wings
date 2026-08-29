@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -79,6 +80,38 @@ func TestServer_MatchAndBufferPlayerEvents_IgnoresUnmatchedAndEmptyConfig(t *tes
 	assert.Nil(t, s.DrainPlayerEvents())
 }
 
+// TestServer_MatchAndBufferPlayerEvents_IgnoresNilJoinMatcher ensures malformed
+// optional matcher data from the Panel cannot panic the console-output path.
+func TestServer_MatchAndBufferPlayerEvents_IgnoresNilJoinMatcher(t *testing.T) {
+	s := &Server{}
+	proc := procWithPlayerEvents(t)
+	proc.PlayerEvents.Join = append([]*remote.OutputLineMatcher{nil}, proc.PlayerEvents.Join...)
+
+	assert.NotPanics(t, func() {
+		s.matchAndBufferPlayerEvents(proc, []byte("Bob joined the game"))
+	})
+
+	events := s.DrainPlayerEvents()
+	require.Len(t, events, 1)
+	assert.Equal(t, "Bob", events[0].Player)
+}
+
+// TestServer_MatchAndBufferPlayerEvents_IgnoresNilFailedJoinMatcher ensures a
+// null Panel array element cannot panic the console-output path.
+func TestServer_MatchAndBufferPlayerEvents_IgnoresNilFailedJoinMatcher(t *testing.T) {
+	s := &Server{}
+	proc := procWithPlayerEvents(t)
+	proc.PlayerEvents.FailedJoin = append([]*remote.FailedJoinMatcher{nil}, proc.PlayerEvents.FailedJoin...)
+
+	assert.NotPanics(t, func() {
+		s.matchAndBufferPlayerEvents(proc, []byte("Disconnecting Sam (/1.2.3.4:5): You are not whitelisted on this server!"))
+	})
+
+	events := s.DrainPlayerEvents()
+	require.Len(t, events, 1)
+	assert.Equal(t, "not_whitelisted", events[0].Code)
+}
+
 func TestServer_MatchAndBufferPlayerEvents_TruncatesLongReason(t *testing.T) {
 	s := &Server{}
 	// A hostile or verbose plugin/mod kick message can push the catch-all
@@ -114,6 +147,47 @@ func TestTruncatePlayerEventCode(t *testing.T) {
 	truncated := truncatePlayerEventCode(long)
 	assert.Len(t, truncated, playerEventCodeMax)
 	assert.Equal(t, long[:playerEventCodeMax], truncated)
+}
+
+// TestPlayerEventTruncationPreservesUTF8 ensures a byte limit never splits a
+// multibyte player-event character into invalid JSON text.
+func TestPlayerEventTruncationPreservesUTF8(t *testing.T) {
+	tests := []struct {
+		name     string
+		maximum  int
+		value    string
+		truncate func(string) string
+	}{
+		{
+			name:    "line",
+			maximum: playerEventLineMax,
+			value:   strings.Repeat("a", playerEventLineMax-1) + "€",
+			truncate: func(value string) string {
+				return truncatePlayerEventLine([]byte(value))
+			},
+		},
+		{
+			name:     "reason",
+			maximum:  playerEventReasonMax,
+			value:    strings.Repeat("a", playerEventReasonMax-1) + "€",
+			truncate: truncatePlayerEventReason,
+		},
+		{
+			name:     "code",
+			maximum:  playerEventCodeMax,
+			value:    strings.Repeat("a", playerEventCodeMax-1) + "€",
+			truncate: truncatePlayerEventCode,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			truncated := test.truncate(test.value)
+
+			assert.LessOrEqual(t, len(truncated), test.maximum)
+			assert.True(t, utf8.ValidString(truncated))
+		})
+	}
 }
 
 func TestServer_DrainPlayerEvents_DedupesIdenticalWithinBatch(t *testing.T) {

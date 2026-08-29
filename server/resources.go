@@ -45,7 +45,10 @@ func (s *Server) Proc() ResourceUsage {
 	defer s.resources.mu.Unlock()
 	// Store the updated disk usage when requesting process usage.
 	atomic.StoreInt64(&s.resources.Disk, s.Filesystem().CachedUsage())
-	return s.resources.ResourceUsage
+	snapshot := s.resources.ResourceUsage
+	snapshot.State = system.NewAtomicString(s.resources.State.Load())
+
+	return snapshot
 }
 
 // UpdateStats updates the current stats for the server's resource usage.

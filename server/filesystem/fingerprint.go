@@ -52,7 +52,7 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 		return nil, err
 	}
 
-	err = fs.unixFS.WalkDirat(dirfd, name, func(_ int, _ string, relative string, d ufs.DirEntry, err error) error {
+	err = fs.unixFS.WalkDirat(dirfd, name, func(dirfd int, name, relative string, d ufs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -79,21 +79,32 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 			return nil
 		}
 
+		// Archive generation skips Unix sockets because archive/tar cannot
+		// represent them. Ignore them here as well so transient runtime sockets
+		// do not invalidate the fingerprint of otherwise unchanged content...
+		if d.Type()&iofs.ModeSocket != 0 {
+			return nil
+		}
+
 		if d.IsDir() {
 			digests = append(digests, hashEntry(relative, "dir"))
 			return nil
 		}
 
-		// A symlink is described by its own lstat modification time, so pointing
-		// an existing link at a new target changes the fingerprint even though
-		// the link's path stays the same...
+		// A tar archive stores both the symlink target and its lstat modification
+		// time. Hash both values so the fingerprint changes even when a link is
+		// retargeted with its metadata deliberately preserved...
 		if d.Type()&iofs.ModeSymlink != 0 {
 			info, err := d.Info()
 			if err != nil {
 				return err
 			}
+			target, err := readLinkAt(dirfd, name)
+			if err != nil {
+				return err
+			}
 
-			digests = append(digests, hashEntry(relative, "symlink", info.ModTime().UnixNano()))
+			digests = append(digests, hashSymlinkEntry(relative, target, info.ModTime().UnixNano()))
 
 			return nil
 		}
@@ -143,10 +154,10 @@ func (fs *Filesystem) Fingerprint(ctx context.Context, ignoreLines string) (*Fin
 //
 // The line is the entry's path, then an optional kind token, then each number,
 // all NUL-separated and closed by a newline. A file passes an empty kind so its
-// size occupies that slot, which is what reproduces the three layouts the
-// fingerprint has always used: "path\x00size\x00mtime\n" for a file,
-// "path\x00dir\n" for a directory and "path\x00symlink\x00mtime\n" for a
-// symlink. These bytes are the fingerprint's on-the-wire format across panel
+// size occupies that slot, which reproduces the two layouts used here:
+// "path\x00size\x00mtime\n" for a file and "path\x00dir\n" for a directory.
+// Symlinks use hashSymlinkEntry because their target is textual metadata.
+// These bytes are the fingerprint's on-the-wire format across panel
 // comparisons, so they must never change without invalidating every stored
 // fingerprint.
 func hashEntry(relative, kind string, numbers ...int64) [sha256.Size]byte {
@@ -163,6 +174,22 @@ func hashEntry(relative, kind string, numbers ...int64) [sha256.Size]byte {
 		line = strconv.AppendInt(line, n, 10)
 	}
 
+	line = append(line, '\n')
+
+	return sha256.Sum256(line)
+}
+
+// hashSymlinkEntry reduces a symlink's path, target, and modification time to
+// a fixed-size digest matching the metadata written to its tar header.
+func hashSymlinkEntry(relative, target string, modificationTime int64) [sha256.Size]byte {
+	line := make([]byte, 0, len(relative)+len(target)+32)
+	line = append(line, relative...)
+	line = append(line, 0)
+	line = append(line, "symlink"...)
+	line = append(line, 0)
+	line = append(line, target...)
+	line = append(line, 0)
+	line = strconv.AppendInt(line, modificationTime, 10)
 	line = append(line, '\n')
 
 	return sha256.Sum256(line)

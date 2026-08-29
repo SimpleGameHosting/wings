@@ -2,6 +2,7 @@ package cron
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"testing"
@@ -9,19 +10,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/remote"
-	"github.com/pterodactyl/wings/server"
-	"github.com/pterodactyl/wings/system"
 )
 
+// fakePlayerEventClient records delivered batches for cron assertions.
 type fakePlayerEventClient struct {
 	remote.Client
 	mu          sync.Mutex
 	sent        map[string][]remote.PlayerEventRequest
 	callLengths map[string][]int
+	calls       int
+	failAtCall  int
 }
 
+// SendPlayerEvents records one callback batch.
 func (f *fakePlayerEventClient) SendPlayerEvents(_ context.Context, uuid string, events []remote.PlayerEventRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -31,72 +33,49 @@ func (f *fakePlayerEventClient) SendPlayerEvents(_ context.Context, uuid string,
 	if f.callLengths == nil {
 		f.callLengths = map[string][]int{}
 	}
+	f.calls++
+	if f.calls == f.failAtCall {
+		return errors.New("panel unavailable")
+	}
 	f.sent[uuid] = append(f.sent[uuid], events...)
 	f.callLengths[uuid] = append(f.callLengths[uuid], len(events))
 	return nil
 }
 
-func TestPlayerEventsCron_DrainsAndSends(t *testing.T) {
-	// SyncWithConfiguration reads the global node config, so the minimal
-	// config must be installed before it is called from this test binary.
-	config.Set(&config.Configuration{AuthenticationToken: "abc"})
-
+// TestSendPlayerEventBatchesSendsEvents verifies an ordinary batch is delivered.
+func TestSendPlayerEventBatchesSendsEvents(t *testing.T) {
 	client := &fakePlayerEventClient{}
-	// NewEmptyManager avoids NewManager's API boot-strap call, which would
-	// invoke GetServers on the fake client's embedded nil remote.Client.
-	m := server.NewEmptyManager(client)
-
-	s, err := server.New(client)
-	require.NoError(t, err)
-	require.NoError(t, s.SyncWithConfiguration(remote.ServerConfigurationResponse{
-		Settings:             []byte(`{}`),
-		ProcessConfiguration: &remote.ProcessConfiguration{},
-	}))
-	// Seed a buffered event through the exported drain contract's counterpart.
-	s.SeedPlayerEventForTest(remote.PlayerEventRequest{Event: "join", Player: "Bob"})
-	m.Add(s)
-
-	c := playerEventsCron{mu: system.NewAtomicBool(false), manager: m}
-	require.NoError(t, c.Run(context.Background()))
+	uuid := "server"
+	require.NoError(t, sendPlayerEventBatches(context.Background(), client, uuid, []remote.PlayerEventRequest{{
+		Event:  "join",
+		Player: "Bob",
+	}}))
 
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	require.Len(t, client.sent[s.ID()], 1)
-	assert.Equal(t, "Bob", client.sent[s.ID()][0].Player)
-	assert.Nil(t, s.DrainPlayerEvents())
+	require.Len(t, client.sent[uuid], 1)
+	assert.Equal(t, "Bob", client.sent[uuid][0].Player)
 }
 
-func TestPlayerEventsCron_ChunksBatchesAtPanelMax(t *testing.T) {
-	// SyncWithConfiguration reads the global node config, so the minimal
-	// config must be installed before it is called from this test binary.
-	config.Set(&config.Configuration{AuthenticationToken: "abc"})
-
+// TestSendPlayerEventBatchesChunksAtPanelMax verifies oversized drains are
+// divided without dropping any events.
+func TestSendPlayerEventBatchesChunksAtPanelMax(t *testing.T) {
 	client := &fakePlayerEventClient{}
-	m := server.NewEmptyManager(client)
+	uuid := "server"
 
-	s, err := server.New(client)
-	require.NoError(t, err)
-	require.NoError(t, s.SyncWithConfiguration(remote.ServerConfigurationResponse{
-		Settings:             []byte(`{}`),
-		ProcessConfiguration: &remote.ProcessConfiguration{},
-	}))
-
-	// Seed more events than the Panel accepts in a single request. Each uses
-	// a distinct player so DrainPlayerEvents' dedupe cannot collapse them,
-	// mirroring how distinct real players would never be deduped either.
+	// Stage more events than the Panel accepts in one request to verify every
+	// chunk stays within the callback contract...
 	const seeded = 25
+	events := make([]remote.PlayerEventRequest, 0, seeded)
 	for i := 0; i < seeded; i++ {
-		s.SeedPlayerEventForTest(remote.PlayerEventRequest{Event: "join", Player: fmt.Sprintf("Player%02d", i)})
+		events = append(events, remote.PlayerEventRequest{Event: "join", Player: fmt.Sprintf("Player%02d", i)})
 	}
-	m.Add(s)
-
-	c := playerEventsCron{mu: system.NewAtomicBool(false), manager: m}
-	require.NoError(t, c.Run(context.Background()))
+	require.NoError(t, sendPlayerEventBatches(context.Background(), client, uuid, events))
 
 	client.mu.Lock()
 	defer client.mu.Unlock()
 
-	lengths := client.callLengths[s.ID()]
+	lengths := client.callLengths[uuid]
 	require.NotEmpty(t, lengths, "expected the cron to call SendPlayerEvents at least once")
 
 	total := 0
@@ -106,4 +85,17 @@ func TestPlayerEventsCron_ChunksBatchesAtPanelMax(t *testing.T) {
 	}
 	assert.Equal(t, seeded, total, "every seeded event must reach the Panel across the batched calls")
 	assert.Greaterf(t, len(lengths), 1, "seeding %d events over a cap of %d must take more than one call", seeded, playerEventBatchMax)
+}
+
+// TestSendPlayerEventBatchesStopsAfterFailure ensures later chunks are not sent
+// out of order after a callback failure.
+func TestSendPlayerEventBatchesStopsAfterFailure(t *testing.T) {
+	client := &fakePlayerEventClient{failAtCall: 2}
+	events := make([]remote.PlayerEventRequest, playerEventBatchMax*3)
+
+	err := sendPlayerEventBatches(context.Background(), client, "server", events)
+
+	require.Error(t, err)
+	assert.Equal(t, 2, client.calls)
+	assert.Len(t, client.sent["server"], playerEventBatchMax)
 }

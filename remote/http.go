@@ -117,6 +117,22 @@ func (c *client) Post(ctx context.Context, path string, data interface{}) (*Resp
 	return c.request(ctx, http.MethodPost, path, bytes.NewBuffer(b))
 }
 
+// postWithRetries executes a JSON POST with an endpoint-specific retry cap.
+func (c *client) postWithRetries(ctx context.Context, path string, data interface{}, maximumRetries uint64) (*Response, error) {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.requestWithBackoff(
+		ctx,
+		http.MethodPost,
+		path,
+		bytes.NewBuffer(b),
+		c.backoffWithMaxRetries(ctx, maximumRetries),
+	)
+}
+
 // requestOnce creates a http request and executes it once. Prefer request()
 // over this method when possible. It appends the path to the endpoint of the
 // client and adds the authentication token to the request.
@@ -154,6 +170,18 @@ func (c *client) requestOnce(ctx context.Context, method, path string, body io.R
 // created. Errors returned will be of the RequestError type if there was some
 // type of response from the API that can be parsed.
 func (c *client) request(ctx context.Context, method, path string, body *bytes.Buffer, opts ...func(r *http.Request)) (*Response, error) {
+	return c.requestWithBackoff(ctx, method, path, body, c.backoff(ctx), opts...)
+}
+
+// requestWithBackoff executes a request using the supplied retry policy.
+func (c *client) requestWithBackoff(
+	ctx context.Context,
+	method string,
+	path string,
+	body *bytes.Buffer,
+	retryBackoff backoff.BackOff,
+	opts ...func(r *http.Request),
+) (*Response, error) {
 	var res *Response
 	err := backoff.Retry(func() error {
 		var b bytes.Buffer
@@ -185,7 +213,7 @@ func (c *client) request(ctx context.Context, method, path string, body *bytes.B
 			return r.Error()
 		}
 		return nil
-	}, c.backoff(ctx))
+	}, retryBackoff)
 	if err != nil {
 		if v, ok := err.(*backoff.PermanentError); ok {
 			return nil, v.Unwrap()
@@ -193,6 +221,12 @@ func (c *client) request(ctx context.Context, method, path string, body *bytes.B
 		return nil, err
 	}
 	return res, nil
+}
+
+// backoffWithMaxRetries returns the standard Panel retry policy capped to a
+// specific number of retries after the initial request.
+func (c *client) backoffWithMaxRetries(ctx context.Context, maximumRetries uint64) backoff.BackOffContext {
+	return backoff.WithContext(backoff.WithMaxRetries(newPanelBackoff(), maximumRetries), ctx)
 }
 
 // backoff returns an exponential backoff function for use with remote API
@@ -219,13 +253,21 @@ func (c *client) request(ctx context.Context, method, path string, body *bytes.B
 // call(): 20.202045293s
 // call(): 27.36567952s <-- Stops here as MaxElapsedTime is 30 seconds
 func (c *client) backoff(ctx context.Context) backoff.BackOffContext {
-	b := backoff.NewExponentialBackOff()
-	b.MaxInterval = time.Second * 12
-	b.MaxElapsedTime = time.Second * 30
+	b := newPanelBackoff()
 	if c.maxAttempts > 0 {
 		return backoff.WithContext(backoff.WithMaxRetries(b, uint64(c.maxAttempts)), ctx)
 	}
 	return backoff.WithContext(b, ctx)
+}
+
+// newPanelBackoff returns the shared exponential timing policy for Panel API
+// requests before an endpoint-specific retry cap and context are applied.
+func newPanelBackoff() *backoff.ExponentialBackOff {
+	b := backoff.NewExponentialBackOff()
+	b.MaxInterval = time.Second * 12
+	b.MaxElapsedTime = time.Second * 30
+
+	return b
 }
 
 // Response is a custom response type that allows for commonly used error

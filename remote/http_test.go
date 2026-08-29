@@ -2,12 +2,39 @@ package remote
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// roundTripperFunc adapts a function into an HTTP transport for focused client
+// lifecycle tests.
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+// RoundTrip executes the adapted transport function.
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+// closeTrackingBody records when the remote client releases a response body.
+type closeTrackingBody struct {
+	closed *bool
+}
+
+// Read provides an empty response payload.
+func (b closeTrackingBody) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+// Close records that the response can be reused by the HTTP transport.
+func (b closeTrackingBody) Close() error {
+	*b.closed = true
+
+	return nil
+}
 
 func createTestClient(h http.HandlerFunc) (*client, *httptest.Server) {
 	s := httptest.NewServer(h)
@@ -90,6 +117,41 @@ func TestRequestRetry(t *testing.T) {
 	assert.NotNil(t, v)
 	assert.Equal(t, http.StatusInternalServerError, v.StatusCode())
 	assert.Equal(t, 3, i)
+}
+
+// TestRequestClosesFailedResponseBeforeRetry ensures a retry does not retain
+// each failed connection body until the entire backoff loop finishes.
+func TestRequestClosesFailedResponseBeforeRetry(t *testing.T) {
+	firstBodyClosed := false
+	closedBeforeSecondRequest := false
+	attempts := 0
+	c := &client{
+		baseUrl:     "http://panel.test",
+		maxAttempts: 1,
+		httpClient: &http.Client{Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts == 2 {
+				closedBeforeSecondRequest = firstBodyClosed
+			}
+
+			bodyClosed := &firstBodyClosed
+			if attempts == 2 {
+				bodyClosed = new(bool)
+			}
+
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     make(http.Header),
+				Body:       closeTrackingBody{closed: bodyClosed},
+			}, nil
+		})},
+	}
+
+	_, err := c.request(context.Background(), http.MethodGet, "/test", nil)
+
+	assert.Error(t, err)
+	assert.Equal(t, 2, attempts)
+	assert.True(t, closedBeforeSecondRequest)
 }
 
 func TestGet(t *testing.T) {

@@ -47,8 +47,10 @@ func TestServer_ProcReturnsSnapshot(t *testing.T) {
 	// Later updates to the live usage must not leak into the snapshot.
 	s.resources.UpdateStats(environment.Stats{Memory: 1})
 	s.resources.Reset()
+	s.resources.State.Store(environment.ProcessOfflineState)
 	assert.EqualValues(t, 1024, snapshot.Memory)
 	assert.EqualValues(t, 90500, snapshot.Uptime)
+	assert.Equal(t, environment.ProcessRunningState, snapshot.State.Load())
 	assert.Zero(t, s.Proc().Memory)
 	assert.Zero(t, s.Proc().Uptime)
 

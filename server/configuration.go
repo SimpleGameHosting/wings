@@ -1,6 +1,8 @@
 package server
 
 import (
+	"maps"
+	"slices"
 	"sync"
 
 	"github.com/pterodactyl/wings/environment"
@@ -71,10 +73,12 @@ type Configuration struct {
 	ConfigurationData
 }
 
-func (s *Server) Config() *Configuration {
-	s.cfg.mu.RLock()
-	defer s.cfg.mu.RUnlock()
-	return &s.cfg
+// Config returns an isolated snapshot of the server settings. Mutating the
+// returned value never changes the live server configuration.
+func (s *Server) Config() *ConfigurationData {
+	snapshot := s.configurationSnapshot()
+
+	return &snapshot
 }
 
 // DiskSpace returns the amount of disk space available to a server in bytes.
@@ -96,17 +100,25 @@ func (s *Server) MemoryLimit() int64 {
 func (s *Server) configurationSnapshot() ConfigurationData {
 	s.cfg.mu.RLock()
 	defer s.cfg.mu.RUnlock()
-	return s.cfg.ConfigurationData
+
+	snapshot := s.cfg.ConfigurationData
+	snapshot.EnvVars = maps.Clone(snapshot.EnvVars)
+	snapshot.Labels = maps.Clone(snapshot.Labels)
+	snapshot.Mounts = slices.Clone(snapshot.Mounts)
+	snapshot.Egg.FileDenylist = slices.Clone(snapshot.Egg.FileDenylist)
+	if s.cfg.Allocations.Mappings != nil {
+		snapshot.Allocations.Mappings = make(map[string][]int, len(s.cfg.Allocations.Mappings))
+		for address, ports := range s.cfg.Allocations.Mappings {
+			snapshot.Allocations.Mappings[address] = slices.Clone(ports)
+		}
+	}
+
+	return snapshot
 }
 
-func (c *Configuration) GetUuid() string {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.Uuid
-}
-
-func (c *Configuration) SetSuspended(s bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.Suspended = s
+// SetSuspended atomically changes the server's local suspension state.
+func (s *Server) SetSuspended(suspended bool) {
+	s.cfg.mu.Lock()
+	defer s.cfg.mu.Unlock()
+	s.cfg.Suspended = suspended
 }

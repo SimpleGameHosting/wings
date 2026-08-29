@@ -2,6 +2,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -25,6 +26,7 @@ func init() {
 	config.Set(&config.Configuration{AuthenticationToken: "test-token"})
 }
 
+// backupTestRemoteClient supplies the remote operations used by router tests.
 type backupTestRemoteClient struct {
 	restoreStatus chan string
 	credentials   chan [2]string
@@ -44,6 +46,12 @@ func (c backupTestRemoteClient) GetServerConfiguration(context.Context, string) 
 
 func (c backupTestRemoteClient) GetServers(context.Context, int) ([]remote.RawServerData, error) {
 	return nil, nil
+}
+
+// ReportCrash satisfies the SGH remote client contract for router tests that do
+// not exercise crash reporting.
+func (c backupTestRemoteClient) ReportCrash(context.Context, string, remote.CrashReportRequest) error {
+	return nil
 }
 
 func (c backupTestRemoteClient) ResetServersState(context.Context) error {
@@ -84,12 +92,19 @@ func (c backupTestRemoteClient) SendActivityLogs(context.Context, []models.Activ
 	return nil
 }
 
+// SendPlayerEvents satisfies the SGH remote client contract for router tests
+// that do not exercise player-event delivery.
+func (c backupTestRemoteClient) SendPlayerEvents(context.Context, string, []remote.PlayerEventRequest) error {
+	return nil
+}
+
 func (c backupTestRemoteClient) SetCredentials(id, token string) {
 	if c.credentials != nil {
 		c.credentials <- [2]string{id, token}
 	}
 }
 
+// backupTestEnvironment supplies a stopped process for backup router tests.
 type backupTestEnvironment struct{}
 
 func (backupTestEnvironment) Type() string { return "test" }
@@ -156,7 +171,9 @@ func newBackupRestoreContext(t *testing.T, client backupTestRemoteClient, backup
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.Config().Uuid = "server"
+	if err := s.SyncWithConfiguration(remote.ServerConfigurationResponse{Settings: json.RawMessage(`{"uuid":"server"}`)}); err != nil {
+		t.Fatal(err)
+	}
 	s.Environment = backupTestEnvironment{}
 
 	c.Set("server", s)

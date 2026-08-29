@@ -2,6 +2,7 @@ package filesystem
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,6 +202,25 @@ func TestFilesystem_Fingerprint(t *testing.T) {
 			g.Assert(before.Fingerprint != after.Fingerprint).IsTrue()
 		})
 
+		g.It("changes when a symlink target changes but its mtime is preserved", func() {
+			writeTestFile(g, fs, "target-a", "a\n")
+			writeTestFile(g, fs, "target-b", "b\n")
+
+			link := filepath.Join(rfs.root, "server", "link")
+			g.Assert(os.Symlink("target-a", link)).IsNil()
+			info, err := os.Lstat(link)
+			g.Assert(err).IsNil()
+			before := fingerprintOf(g, fs, "")
+
+			g.Assert(os.Remove(link)).IsNil()
+			g.Assert(os.Symlink("target-b", link)).IsNil()
+			preserved := unix.NsecToTimespec(info.ModTime().UnixNano())
+			g.Assert(unix.UtimesNanoAt(unix.AT_FDCWD, link, []unix.Timespec{preserved, preserved}, unix.AT_SYMLINK_NOFOLLOW)).IsNil()
+			after := fingerprintOf(g, fs, "")
+
+			g.Assert(before.Fingerprint != after.Fingerprint).IsTrue()
+		})
+
 		g.It("changes when an empty directory is added", func() {
 			writeTestFile(g, fs, "world/level.dat", "level\n")
 			before := fingerprintOf(g, fs, "")
@@ -209,6 +229,24 @@ func TestFilesystem_Fingerprint(t *testing.T) {
 			after := fingerprintOf(g, fs, "")
 
 			g.Assert(before.Fingerprint != after.Fingerprint).IsTrue()
+			g.Assert(after.Files).Equal(before.Files)
+		})
+
+		g.It("ignores Unix sockets exactly as the archiver does", func() {
+			writeTestFile(g, fs, "server.properties", "motd=hello\n")
+			before := fingerprintOf(g, fs, "")
+
+			// Runtime sockets are transient process state and archive/tar cannot
+			// represent them, so creating one must not invalidate a backup
+			// fingerprint...
+			socketPath := filepath.Join(rfs.root, "server", "server.sock")
+			listener, err := net.Listen("unix", socketPath)
+			g.Assert(err).IsNil()
+			defer listener.Close()
+
+			after := fingerprintOf(g, fs, "")
+
+			g.Assert(after.Fingerprint).Equal(before.Fingerprint)
 			g.Assert(after.Files).Equal(before.Files)
 		})
 

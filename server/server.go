@@ -122,7 +122,10 @@ func (s *Server) CleanupForDestroy() {
 
 // ID returns the UUID for the server instance.
 func (s *Server) ID() string {
-	return s.Config().GetUuid()
+	s.cfg.mu.RLock()
+	defer s.cfg.mu.RUnlock()
+
+	return s.cfg.Uuid
 }
 
 // Id returns the UUID for the server instance. This function is deprecated
@@ -152,17 +155,18 @@ func (s *Server) Context() context.Context {
 // Returns all of the environment variables that should be assigned to a running
 // server instance.
 func (s *Server) GetEnvironmentVariables() []string {
+	cfg := s.Config()
 	out := []string{
 		// TODO: allow this to be overridden by the user.
 		fmt.Sprintf("TZ=%s", config.Get().System.Timezone),
-		fmt.Sprintf("STARTUP=%s", s.Config().Invocation),
-		fmt.Sprintf("SERVER_MEMORY=%d", s.MemoryLimit()),
-		fmt.Sprintf("SERVER_IP=%s", s.Config().Allocations.DefaultMapping.Ip),
-		fmt.Sprintf("SERVER_PORT=%d", s.Config().Allocations.DefaultMapping.Port),
+		fmt.Sprintf("STARTUP=%s", cfg.Invocation),
+		fmt.Sprintf("SERVER_MEMORY=%d", cfg.Build.MemoryLimit),
+		fmt.Sprintf("SERVER_IP=%s", cfg.Allocations.DefaultMapping.Ip),
+		fmt.Sprintf("SERVER_PORT=%d", cfg.Allocations.DefaultMapping.Port),
 	}
 
 eloop:
-	for k := range s.Config().EnvVars {
+	for k := range cfg.EnvVars {
 		// Don't allow any environment variables that we have already set above.
 		for _, e := range out {
 			if strings.HasPrefix(e, strings.ToUpper(k)+"=") {
@@ -170,7 +174,7 @@ eloop:
 			}
 		}
 
-		out = append(out, fmt.Sprintf("%s=%s", strings.ToUpper(k), s.Config().EnvVars.Get(k)))
+		out = append(out, fmt.Sprintf("%s=%s", strings.ToUpper(k), cfg.EnvVars.Get(k)))
 	}
 
 	return out
@@ -233,11 +237,10 @@ func (s *Server) SyncWithConfiguration(cfg remote.ServerConfigurationResponse) e
 	}
 
 	s.cfg.mu.Lock()
-	defer s.cfg.mu.Unlock()
-
-	// Only the settings are replaced. The lock guarding them stays where it is,
-	// so anything already queued on it wakes up normally once we unlock.
+	// Replace only the settings so existing waiters remain attached to the live
+	// configuration lock...
 	s.cfg.ConfigurationData = c
+	s.cfg.mu.Unlock()
 
 	s.Lock()
 	s.procConfig = cfg.ProcessConfiguration
@@ -276,7 +279,10 @@ func (s *Server) CreateEnvironment() error {
 
 // Checks if the server is marked as being suspended or not on the system.
 func (s *Server) IsSuspended() bool {
-	return s.Config().Suspended
+	s.cfg.mu.RLock()
+	defer s.cfg.mu.RUnlock()
+
+	return s.cfg.Suspended
 }
 
 func (s *Server) ProcessConfiguration() *remote.ProcessConfiguration {
@@ -314,6 +320,7 @@ func (s *Server) EnsureDataDirectoryExists() error {
 // well as reporting to event listeners for the server.
 func (s *Server) OnStateChange() {
 	prevState := s.resources.State.Load()
+	uptime := int64(0)
 
 	st := s.Environment.State()
 	// Update the currently tracked state for the server.
@@ -330,7 +337,7 @@ func (s *Server) OnStateChange() {
 	if st == environment.ProcessOfflineState {
 		// Capture the uptime before the reset wipes it; the crash handler
 		// reports it to the Panel if this transition turns out to be a crash.
-		s.crasher.SetLastUptime(s.Proc().Uptime)
+		uptime = s.Proc().Uptime
 		s.resources.Reset()
 		s.Events().Publish(StatsEvent, s.Proc())
 	}
@@ -346,8 +353,8 @@ func (s *Server) OnStateChange() {
 	if (prevState == environment.ProcessStartingState || prevState == environment.ProcessRunningState) && s.Environment.State() == environment.ProcessOfflineState {
 		s.Log().Info("detected server as entering a crashed state; running crash handler")
 
-		go func(server *Server) {
-			if err := server.handleServerCrash(); err != nil {
+		go func(server *Server, crashUptime int64) {
+			if err := server.handleServerCrash(crashUptime); err != nil {
 				if IsTooFrequentCrashError(err) {
 					server.Log().Info("did not restart server after crash; occurred too soon after the last")
 				} else {
@@ -355,7 +362,7 @@ func (s *Server) OnStateChange() {
 					server.Log().WithField("error", err).Error("failed to handle server crash")
 				}
 			}
-		}(s)
+		}(s, uptime)
 	}
 }
 

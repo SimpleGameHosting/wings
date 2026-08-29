@@ -15,6 +15,7 @@ import (
 	"github.com/juju/ratelimit"
 	"github.com/klauspost/pgzip"
 	ignore "github.com/sabhiram/go-gitignore"
+	"golang.org/x/sys/unix"
 
 	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/internal/progress"
@@ -55,6 +56,7 @@ func (p *TarProgress) Write(v []byte) (int, error) {
 	return p.p.Write(v)
 }
 
+// Archive streams selected server files into a compressed tar archive.
 type Archive struct {
 	// Filesystem to create the archive with.
 	Filesystem *Filesystem
@@ -204,8 +206,10 @@ func (a *Archive) callback(opts ...walkFunc) walkFunc {
 		base = filepath.Base(a.BaseDirectory) + "/"
 	}
 	return func(dirfd int, name, relative string, d ufs.DirEntry) error {
-		// Skip directories because we are walking them recursively.
-		if d.IsDir() {
+		// The walk root is an implementation detail rather than server content.
+		// Child directories are archived explicitly so empty directories are
+		// preserved and the archive matches the fingerprint's file set...
+		if relative == "." {
 			return nil
 		}
 
@@ -282,7 +286,7 @@ func (a *Archive) addToArchive(dirfd int, name, relative string, entry ufs.DirEn
 		// the logs, but we're not going to stop the backup. There are far too many cases of
 		// symlinks causing all sorts of unnecessary pain in this process. Sucks to suck if
 		// it doesn't work.
-		target, err = os.Readlink(s.Name())
+		target, err = readLinkAt(dirfd, name)
 		if err != nil {
 			// Ignore the not exist errors specifically, since there is nothing important about that.
 			if !os.IsNotExist(err) {
@@ -298,10 +302,9 @@ func (a *Archive) addToArchive(dirfd int, name, relative string, entry ufs.DirEn
 		return errors.WrapIff(err, "failed to get tar#FileInfoHeader for '%s'", name)
 	}
 
-	// Fix the header name if the file is not a symlink.
-	if s.Mode()&fs.ModeSymlink == 0 {
-		header.Name = relative
-	}
+	// FileInfoHeader only receives the entry's basename from FileInfo. Restore
+	// the walked relative path for every entry, including nested symlinks...
+	header.Name = relative
 
 	// Write the tar FileInfoHeader to the archive.
 	if err := a.w.WriteHeader(header); err != nil {
@@ -341,4 +344,19 @@ func (a *Archive) addToArchive(dirfd int, name, relative string, entry ufs.DirEn
 		return errors.WrapIff(err, "failed to copy '%s' to archive", header.Name)
 	}
 	return nil
+}
+
+// readLinkAt reads a symlink relative to its already-validated parent
+// directory descriptor so archive generation does not depend on process cwd.
+func readLinkAt(dirfd int, name string) (string, error) {
+	buffer := make([]byte, unix.PathMax)
+	length, err := unix.Readlinkat(dirfd, name, buffer)
+	if err != nil {
+		return "", err
+	}
+	if length == len(buffer) {
+		return "", unix.ENAMETOOLONG
+	}
+
+	return string(buffer[:length]), nil
 }

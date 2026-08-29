@@ -14,16 +14,12 @@ import (
 	"github.com/pterodactyl/wings/remote"
 )
 
+// CrashHandler tracks the restart-throttle state for one server.
 type CrashHandler struct {
 	mu sync.RWMutex
 
 	// Tracks the time of the last server crash event.
 	lastCrash time.Time
-
-	// Uptime of the server process in milliseconds, captured immediately
-	// before the environment stats were reset as the process went offline.
-	// Zero means unknown. Used to enrich the panel crash report.
-	lastUptime int64
 }
 
 // Returns the time of the last crash for this server instance.
@@ -41,23 +37,6 @@ func (cd *CrashHandler) SetLastCrash(t time.Time) {
 	cd.mu.Unlock()
 }
 
-// LastUptime returns the process uptime in milliseconds captured at the
-// most recent transition to the offline state, or zero when unknown.
-func (cd *CrashHandler) LastUptime() int64 {
-	cd.mu.RLock()
-	defer cd.mu.RUnlock()
-
-	return cd.lastUptime
-}
-
-// SetLastUptime stores the process uptime captured before the environment
-// stats were reset for an offline transition.
-func (cd *CrashHandler) SetLastUptime(ms int64) {
-	cd.mu.Lock()
-	cd.lastUptime = ms
-	cd.mu.Unlock()
-}
-
 // Looks at the environment exit state to determine if the process exited cleanly or
 // if it was the result of an event that we should try to recover from.
 //
@@ -68,12 +47,14 @@ func (cd *CrashHandler) SetLastUptime(ms int64) {
 //
 // If the server is determined to have crashed, the process will be restarted and the
 // counter for the server will be incremented.
-func (s *Server) handleServerCrash() error {
+func (s *Server) handleServerCrash(uptime int64) error {
+	serverConfiguration := s.configurationSnapshot()
+
 	// No point in doing anything here if the server isn't currently offline, there
 	// is no reason to do a crash detection event. If the server crash detection is
 	// disabled we want to skip anything after this as well.
-	if s.Environment.State() != environment.ProcessOfflineState || !s.Config().CrashDetectionEnabled {
-		if !s.Config().CrashDetectionEnabled {
+	if s.Environment.State() != environment.ProcessOfflineState || !serverConfiguration.CrashDetectionEnabled {
+		if !serverConfiguration.CrashDetectionEnabled {
 			s.Log().Debug("server triggered crash detection but handler is disabled for server process")
 			s.PublishConsoleOutputFromDaemon("Aborting automatic restart, crash detection is disabled for this instance.")
 		}
@@ -99,16 +80,17 @@ func (s *Server) handleServerCrash() error {
 
 	// Report the crash to the Panel in the background so a crash report can
 	// be generated. This must never block or delay the restart flow below.
-	s.reportCrashToPanel(exitCode, oomKilled)
+	s.reportCrashToPanel(exitCode, oomKilled, uptime)
 
 	c := s.crasher.LastCrashTime()
-	timeout := config.Get().System.CrashDetection.Timeout
+	crashDetection := config.Get().System.CrashDetection
+	timeout := crashDetection.Timeout
 
 	// If the last crash time was within the last `timeout` seconds we do not want to perform
 	// an automatic reboot of the process. Return an error that can be handled.
 	//
 	// If timeout is set to 0, always reboot the server (this is probably a terrible idea, but some people want it)
-	if timeout != 0 && !c.IsZero() && c.Add(time.Second*time.Duration(config.Get().System.CrashDetection.Timeout)).After(time.Now()) {
+	if timeout != 0 && !c.IsZero() && c.Add(time.Second*time.Duration(timeout)).After(time.Now()) {
 		s.PublishConsoleOutputFromDaemon("Aborting automatic restart, last crash occurred less than " + strconv.Itoa(timeout) + " seconds ago.")
 		return &crashTooFrequent{}
 	}
@@ -121,16 +103,18 @@ func (s *Server) handleServerCrash() error {
 // reportCrashToPanel notifies the Panel of a detected crash from a
 // background routine. Failures are logged and dropped: crash reporting is
 // best effort and must never interfere with crash handling or restarts.
-func (s *Server) reportCrashToPanel(exitCode uint32, oomKilled bool) {
+func (s *Server) reportCrashToPanel(exitCode uint32, oomKilled bool, uptime int64) {
+	uuid := s.ID()
+	report := remote.CrashReportRequest{
+		ExitCode:      exitCode,
+		OOMKilled:     oomKilled,
+		UptimeSeconds: uptime / 1000,
+		OccurredAt:    time.Now(),
+	}
 	ctx, cancel := context.WithTimeout(s.Context(), time.Second*30)
 	go func() {
 		defer cancel()
-		if err := s.client.ReportCrash(ctx, s.ID(), remote.CrashReportRequest{
-			ExitCode:      exitCode,
-			OOMKilled:     oomKilled,
-			UptimeSeconds: s.crasher.LastUptime() / 1000,
-			OccurredAt:    time.Now(),
-		}); err != nil {
+		if err := s.client.ReportCrash(ctx, uuid, report); err != nil {
 			s.Log().WithField("error", err).Warn("failed to report crash to panel")
 		}
 	}()

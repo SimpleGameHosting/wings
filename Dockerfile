@@ -1,5 +1,5 @@
 # Stage 1 (Build)
-FROM golang:1.24.11-alpine AS builder
+FROM golang:1.25.14-alpine@sha256:1ae0735f00daffa3aaf1363a5184c0d2dc55c78e3db4ec70241cdac97bf84b59 AS builder
 
 ARG VERSION
 RUN apk add --update --no-cache git make mailcap
@@ -16,7 +16,7 @@ RUN CGO_ENABLED=0 go build \
 RUN echo "ID=\"distroless\"" > /etc/os-release
 
 # Stage 2 (Final)
-FROM gcr.io/distroless/static:latest
+FROM gcr.io/distroless/static:latest@sha256:f2ea2709ac8db56323cbd7d014277f32cb572d9ea124b0076f7aafe5980678fe
 COPY --from=builder /etc/os-release /etc/os-release
 COPY --from=builder /etc/mime.types /etc/mime.types
 

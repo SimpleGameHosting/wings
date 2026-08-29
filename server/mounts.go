@@ -65,9 +65,10 @@ func (s *Server) Mounts() []environment.Mount {
 // allowed mount points for the node.
 func (s *Server) customMounts() []environment.Mount {
 	var mounts []environment.Mount
+	serverConfiguration := s.Config()
 
 	// TODO: probably need to handle things trying to mount directories that do not exist.
-	for _, m := range s.Config().Mounts {
+	for _, m := range serverConfiguration.Mounts {
 		source := filepath.Clean(m.Source)
 		target := filepath.Clean(m.Target)
 

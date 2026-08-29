@@ -194,7 +194,7 @@ func deleteServer(c *gin.Context) {
 
 	// Immediately suspend the server to prevent a user from attempting
 	// to start it while this process is running.
-	s.Config().SetSuspended(true)
+	s.SetSuspended(true)
 
 	// Notify all websocket clients that the server is being deleted.
 	// This is useful for two reasons, one to tell clients not to bother

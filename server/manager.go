@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/pterodactyl/wings/server/filesystem"
 )
 
+// Manager owns the active server collection and its Panel client.
 type Manager struct {
 	mu      sync.RWMutex
 	client  remote.Client
@@ -74,7 +76,7 @@ func (m *Manager) Keys() []string {
 // is passed through.
 func (m *Manager) Put(s []*Server) {
 	m.mu.Lock()
-	m.servers = s
+	m.servers = slices.Clone(s)
 	m.mu.Unlock()
 }
 
@@ -82,7 +84,8 @@ func (m *Manager) Put(s []*Server) {
 func (m *Manager) All() []*Server {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.servers
+
+	return slices.Clone(m.servers)
 }
 
 // Add adds an item to the collection store.
@@ -195,8 +198,9 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 	if err := s.SyncWithConfiguration(data); err != nil {
 		return nil, errors.WithStackIf(err)
 	}
+	serverConfiguration := s.Config()
 
-	s.fs, err = filesystem.New(filepath.Join(config.Get().System.Data, s.ID()), s.DiskSpace(), s.Config().Egg.FileDenylist)
+	s.fs, err = filesystem.New(filepath.Join(config.Get().System.Data, s.ID()), s.DiskSpace(), serverConfiguration.Egg.FileDenylist)
 	if err != nil {
 		return nil, errors.WithStackIf(err)
 	}
@@ -206,14 +210,14 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 	// some modifications here, obviously.
 	settings := environment.Settings{
 		Mounts:      s.Mounts(),
-		Allocations: s.cfg.Allocations,
-		Limits:      s.cfg.Build,
-		Labels:      s.cfg.Labels,
+		Allocations: serverConfiguration.Allocations,
+		Limits:      serverConfiguration.Build,
+		Labels:      serverConfiguration.Labels,
 	}
 
 	envCfg := environment.NewConfiguration(settings, s.GetEnvironmentVariables())
 	meta := docker.Metadata{
-		Image: s.Config().Container.Image,
+		Image: serverConfiguration.Container.Image,
 	}
 
 	if env, err := docker.New(s.ID(), &meta, envCfg); err != nil {
