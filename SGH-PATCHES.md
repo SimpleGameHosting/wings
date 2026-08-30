@@ -142,3 +142,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Files: `remote/types.go`, `remote/http.go`, `remote/servers.go`, `remote/types_test.go`, `remote/http_test.go`, `remote/servers_test.go`, `remote/player_events_fixture_test.go`, `remote/testdata/player_events_minecraft_java.json`, `router/router_server_backup_test.go`, `server/player_events.go`, `server/player_events_test.go`, `server/server.go`, `server/listeners.go`, `internal/cron/player_events_cron.go`, `internal/cron/cron.go`, `internal/cron/player_events_cron_test.go`.
 - Conflict risk on rebase: low-medium.
   `ProcessConfiguration` and `onConsoleOutput` are upstream-owned surfaces with additive SGH changes.
+
+### router: 404 for missing files
+
+- What: `asFilesystemError()` also matches plain `os.ErrNotExist` (via `errors.Is`) so missing-file errors that bypass the filesystem error wrapper return 404 instead of 500.
+- Why: file endpoints returned internal-server-error for simple missing paths, confusing the panel file manager and API consumers.
+- Files: `router/middleware/request_error.go`, `router/middleware/request_error_test.go`.
+- Conflict risk on rebase: low; one condition plus a test.
