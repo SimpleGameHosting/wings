@@ -117,7 +117,8 @@ func (re *RequestError) asFilesystemError() (int, string) {
 	if err == nil {
 		return 0, ""
 	}
-	if filesystem.IsErrorCode(err, filesystem.ErrNotExist) ||
+	if errors.Is(err, os.ErrNotExist) ||
+		filesystem.IsErrorCode(err, filesystem.ErrNotExist) ||
 		filesystem.IsErrorCode(err, filesystem.ErrCodePathResolution) ||
 		strings.Contains(err.Error(), "resolves to a location outside the server root") {
 		return http.StatusNotFound, "The requested resources was not found on the system."
