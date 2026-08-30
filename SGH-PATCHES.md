@@ -149,3 +149,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: file endpoints returned internal-server-error for simple missing paths, confusing the panel file manager and API consumers.
 - Files: `router/middleware/request_error.go`, `router/middleware/request_error_test.go`.
 - Conflict risk on rebase: low; one condition plus a test.
+
+### config: default backup compression best_compression
+
+- What: `SystemConfiguration.Backups.CompressionLevel` default changes `best_speed` -> `best_compression`.
+- Why: replaces the retired `backup_compression.yml` ansible enforcement - SGH wants maximum backup compression fleet-wide; a binary default cannot drift. Note: an explicit `compression_level` in a node's config.yml still overrides this.
+- Files: `config/config.go`.
+- Conflict risk on rebase: low; one struct-tag value.

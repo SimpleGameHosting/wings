@@ -288,7 +288,7 @@ type Backups struct {
 	// "best_compression" -> uses gzip level 9 for minimal disk space useage
 	//
 	// Defaults to "best_speed" (level 1)
-	CompressionLevel string `default:"best_speed" yaml:"compression_level"`
+	CompressionLevel string `default:"best_compression" yaml:"compression_level"`
 
 	// RestoreHostAllowlist allows backup restore downloads to connect to otherwise blocked
 	// private/internal destinations. Entries may be hostnames, IP addresses, or CIDR ranges.
