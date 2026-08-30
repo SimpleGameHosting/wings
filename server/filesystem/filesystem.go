@@ -222,6 +222,23 @@ func (fs *Filesystem) Rename(oldpath, newpath string) error {
 	return fs.unixFS.Rename(oldpath, newpath)
 }
 
+// Replace atomically publishes oldpath at newpath and updates cached quota usage for an overwritten file.
+func (fs *Filesystem) Replace(oldpath, newpath string) error {
+	var replacedSize int64
+	info, err := fs.unixFS.Lstat(newpath)
+	if err == nil && !info.IsDir() {
+		replacedSize = info.Size()
+	} else if err != nil && !errors.Is(err, ufs.ErrNotExist) {
+		return err
+	}
+
+	if err := fs.unixFS.Replace(oldpath, newpath); err != nil {
+		return err
+	}
+	fs.adjustDisk(-replacedSize)
+	return nil
+}
+
 // Symlink creates newpath as a symbolic link to oldpath, creating any missing
 // parent directories and giving the link itself the configured server
 // ownership. The link target is deliberately left untouched: links may point

@@ -3,6 +3,7 @@ package middleware
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 
@@ -52,7 +53,7 @@ func (re *RequestError) Abort(c *gin.Context, status int) {
 
 	// Generate the base logger instance, attaching the unique request ID and
 	// the URL that was requested.
-	event := log.WithField("request_id", reqId).WithField("url", c.Request.URL.String())
+	event := log.WithField("request_id", reqId).WithField("url", redactRequestURL(c.Request.URL))
 	// If there is a server present in the gin.Context stack go ahead and pull it
 	// and attach that server UUID to the logs as well so that we can see what specific
 	// server triggered this error.
@@ -91,6 +92,17 @@ func (re *RequestError) Abort(c *gin.Context, status int) {
 	// ID that was present to make things super easy on people who don't know how
 	// or cannot view the response headers (where X-Request-Id would be present).
 	c.AbortWithStatusJSON(status, gin.H{"error": re.msg, "request_id": reqId})
+}
+
+// redactRequestURL removes signed JWT query values before a failed request reaches application logs.
+func redactRequestURL(requestURL *url.URL) string {
+	copy := *requestURL
+	query := copy.Query()
+	if query.Has("token") {
+		query.Set("token", "[redacted]")
+		copy.RawQuery = query.Encode()
+	}
+	return copy.String()
 }
 
 // Cause returns the underlying error.

@@ -99,8 +99,9 @@ func SetAccessControlHeaders() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", location)
 		c.Header("Access-Control-Allow-Credentials", "true")
-		c.Header("Access-Control-Allow-Methods", "GET, POST, PATCH, PUT, DELETE, OPTIONS")
-		c.Header("Access-Control-Allow-Headers", "Accept, Accept-Encoding, Authorization, Cache-Control, Content-Type, Content-Length, Origin, X-Real-IP, X-CSRF-Token")
+		c.Header("Access-Control-Allow-Methods", "GET, HEAD, POST, PATCH, PUT, DELETE, OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Accept, Accept-Encoding, Authorization, Cache-Control, Content-Type, Content-Length, Origin, Upload-Complete, Upload-Fingerprint, Upload-Length, Upload-Offset, X-Real-IP, X-CSRF-Token")
+		c.Header("Access-Control-Expose-Headers", "Location, Upload-Complete, Upload-ID, Upload-Length, Upload-Offset, X-Request-Id")
 
 		// CORS for Private Networks (RFC1918)
 		// @see https://developer.chrome.com/blog/private-network-access-update/?utm_source=devtools

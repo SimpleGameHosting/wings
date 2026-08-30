@@ -23,7 +23,6 @@ import (
 	"github.com/pterodactyl/wings/internal/models"
 	"github.com/pterodactyl/wings/router/downloader"
 	"github.com/pterodactyl/wings/router/middleware"
-	"github.com/pterodactyl/wings/router/tokens"
 	"github.com/pterodactyl/wings/server"
 	"github.com/pterodactyl/wings/server/filesystem"
 )
@@ -620,19 +619,13 @@ func postServerChmodFile(c *gin.Context) {
 }
 
 func postServerUploadFiles(c *gin.Context) {
-	manager := middleware.ExtractManager(c)
-
-	token := tokens.UploadPayload{}
-	if err := tokens.ParseToken([]byte(c.Query("token")), &token); err != nil {
-		middleware.CaptureAndAbort(c, err)
+	if c.GetHeader(uploadCompleteHeader) != "" {
+		postServerCreateResumableUpload(c)
 		return
 	}
 
-	s, ok := manager.Get(token.ServerUuid)
-	if !ok || token.Denylisted() || !token.IsUniqueRequest() || !token.HasScope(tokens.FileUpload) {
-		c.AbortWithStatusJSON(http.StatusNotFound, gin.H{
-			"error": "The requested resource was not found on this server.",
-		})
+	s, token, ok := authenticateServerUpload(c, true)
+	if !ok {
 		return
 	}
 

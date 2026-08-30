@@ -28,6 +28,7 @@ type Manager struct {
 	mu      sync.RWMutex
 	client  remote.Client
 	servers []*Server
+	uploads *UploadManager
 }
 
 // NewManager returns a new server manager instance. This will boot up all the
@@ -45,13 +46,21 @@ func NewManager(ctx context.Context, client remote.Client) (*Manager, error) {
 // loading any of the servers from the disk. This allows the caller to set their
 // own servers into the collection as needed.
 func NewEmptyManager(client remote.Client) *Manager {
-	return &Manager{client: client}
+	return &Manager{
+		client:  client,
+		uploads: NewUploadManager(filepath.Join(config.Get().System.RootDirectory, "resumable-uploads")),
+	}
 }
 
 // Client returns the HTTP client interface that allows interaction with the
 // Panel API.
 func (m *Manager) Client() remote.Client {
 	return m.client
+}
+
+// Uploads returns the node-level manager that owns resumable upload sessions.
+func (m *Manager) Uploads() *UploadManager {
+	return m.uploads
 }
 
 // Len returns the count of servers stored in the manager instance.
@@ -203,6 +212,9 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 	s.fs, err = filesystem.New(filepath.Join(config.Get().System.Data, s.ID()), s.DiskSpace(), serverConfiguration.Egg.FileDenylist)
 	if err != nil {
 		return nil, errors.WithStackIf(err)
+	}
+	if err := m.uploads.CleanupExpired(s); err != nil {
+		return nil, errors.WrapIf(err, "server: failed to clean expired resumable uploads")
 	}
 
 	// Right now we only support a Docker based environment, so I'm going to hard code

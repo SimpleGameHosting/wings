@@ -130,6 +130,20 @@ Every SGH modification MUST be registered here before its work is considered com
 - Conflict risk on rebase: low-medium.
   The fingerprint route is additive, while archive parity changes share the upstream archiver and must retain their end-to-end tar tests.
 
+### router/server: resumable file uploads
+
+- What: extends the signed `/upload/file` endpoint with durable resumable sessions using `POST`, `HEAD`, `PATCH`, and `DELETE`.
+  Sessions bind the server, user, normalized destination, declared size, and SHA-256 fingerprint in private node metadata, and Wings verifies that fingerprint before publication.
+  Chunks stream through the existing quota-aware filesystem, offsets are serialized per destination, and completion atomically replaces the target from a hidden sibling partial file.
+  Existing multipart uploads remain unchanged for Panels that have not enabled the resumable client.
+  Expired sessions and partial files are removed when a server initializes and before new sessions are created.
+- Why: large browser uploads should survive interrupted requests and expiring signed URLs without exposing incomplete worlds, archives, or server binaries at their final destination.
+  A dedicated session prevents an existing same-name file from being misidentified as the beginning of a different upload.
+- Files: `internal/ufs/fs_unix.go`, `router/middleware/middleware.go`, `router/middleware/request_error.go`, `router/middleware/request_error_test.go`, `router/router.go`, `router/router_server_files.go`, `router/router_server_upload.go`, `router/router_server_upload_test.go`, `server/filesystem/filesystem.go`, `server/manager.go`, `server/uploads.go`.
+- Conflict risk on rebase: medium.
+  The public upload route and filesystem rename implementation are upstream-owned surfaces, while the session manager and protocol handler are additive.
+  Recheck signed-token semantics, CORS headers, quota accounting, and atomic replacement behavior after every upstream rebase.
+
 ### remote/server: player events panel callback
 
 - What: matches running-server console lines against Panel-served join and failed-join matchers, buffers them under a 20-per-minute limit, and posts batches every five seconds.
