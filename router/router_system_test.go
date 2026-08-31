@@ -13,6 +13,13 @@ import (
 )
 
 func TestPostUpdateConfigurationRotatesCredentials(t *testing.T) {
+	// This test replaces the package-level configuration, so restore the
+	// previous one afterwards to keep later tests on the init() credentials.
+	previous := config.Get()
+	t.Cleanup(func() {
+		config.Set(previous)
+	})
+
 	t.Setenv("WINGS_TOKEN_ID", "")
 	t.Setenv("WINGS_TOKEN", "")
 

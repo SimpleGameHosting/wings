@@ -211,3 +211,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: any installer failure for a fresh transfer (unreachable panel, bad server configuration) dereferenced the nil server and panicked, so the source node got a blank 500 and the panel was never told the transfer failed, leaving it stuck in a transferring state (pre-existing upstream bug, still present in v1.13.3).
 - Files: `router/router_transfer.go`, `router/router_transfer_test.go`.
 - Conflict risk on rebase: low; one line in the error branch plus an additive end-to-end test.
+
+### test: restore the global config after credential rotation
+
+- What: `TestPostUpdateConfigurationRotatesCredentials` snapshots the package configuration and restores it in `t.Cleanup`, matching the pattern every SGH router fixture uses.
+- Why: the handler under test rotates the global authentication token and never put it back, so any later router test relying on the `init()` credentials failed with 403 under `go test -shuffle=on` (pre-existing upstream test-order dependency; CI does not shuffle, which masked it).
+- Files: `router/router_system_test.go`.
+- Conflict risk on rebase: low; seven additive lines at the top of one upstream test.
