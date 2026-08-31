@@ -151,18 +151,28 @@ func (s *Server) RestoreBackup(b backup.BackupInterface, reader io.ReadCloser) (
 	// Attempt to restore the backup to the server by running through each entry
 	// in the file one at a time and writing them to the disk.
 	s.Log().Debug("starting file writing process for backup restoration")
-	err = b.Restore(s.Context(), reader, func(file string, info fs.FileInfo, r io.ReadCloser) error {
-		defer r.Close()
-		s.Events().Publish(DaemonMessageEvent, "(restoring): "+file)
-		// TODO: since this will be called a lot, it may be worth adding an optimized
-		// Write with Chtimes method to the UnixFS that is able to re-use the
-		// same dirfd and file name.
-		if err := s.Filesystem().Write(file, r, info.Size(), info.Mode()); err != nil {
-			return err
-		}
-		atime := info.ModTime()
-		return s.Filesystem().Chtimes(file, atime, atime)
-	})
+	err = b.Restore(s.Context(), reader, s.restoreBackupEntry)
 
 	return errors.WithStackIf(err)
+}
+
+// restoreBackupEntry recreates one archived directory or regular file in the server filesystem.
+func (s *Server) restoreBackupEntry(file string, info fs.FileInfo, reader io.ReadCloser) error {
+	defer reader.Close()
+	s.Events().Publish(DaemonMessageEvent, "(restoring): "+file)
+
+	// Directory entries must be created explicitly. Passing them to Write would
+	// create regular files at those paths and make every nested entry fail...
+	if info.IsDir() {
+		return s.Filesystem().CreateDirectory(file, "/")
+	}
+
+	// TODO: since this will be called a lot, it may be worth adding an optimized
+	// Write with Chtimes method to the UnixFS that is able to re-use the
+	// same dirfd and file name.
+	if err := s.Filesystem().Write(file, reader, info.Size(), info.Mode()); err != nil {
+		return err
+	}
+	atime := info.ModTime()
+	return s.Filesystem().Chtimes(file, atime, atime)
 }
