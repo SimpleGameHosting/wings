@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gbrlsnchs/jwt/v3"
+	"github.com/gin-gonic/gin"
 
 	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/remote"
@@ -105,6 +106,89 @@ func newTransferFixture(t *testing.T, client *transferTestRemoteClient) (*wserve
 	t.Cleanup(func() { transfer.Incoming().Remove(trnsfr) })
 
 	return manager, trnsfr
+}
+
+// signTransferToken builds a signed transfer JWT for the given server UUID,
+// mirroring what the panel issues to the source node.
+func signTransferToken(t *testing.T, serverUUID string) string {
+	t.Helper()
+
+	payload := tokens.TransferPayload{
+		Payload: jwt.Payload{
+			Subject:        serverUUID,
+			ExpirationTime: jwt.NumericDate(time.Now().Add(10 * time.Minute)),
+		},
+		Scoped: tokens.Scoped{Scope: string(tokens.ServerTransfer)},
+	}
+	signed, err := jwt.Sign(&payload, config.GetJwtAlgorithm())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(signed)
+}
+
+// newTransferRequestContext builds a POST /api/transfers context carrying the
+// signed token and the manager, exactly as the router middleware would.
+func newTransferRequestContext(t *testing.T, manager *wserver.Manager, token string) (*gin.Context, *httptest.ResponseRecorder) {
+	t.Helper()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	request := httptest.NewRequest(http.MethodPost, "/api/transfers", strings.NewReader(""))
+	c.Request = request
+	c.Request.Header.Set("Authorization", "Bearer "+token)
+	c.Set("manager", manager)
+	return c, recorder
+}
+
+// TestPostTransfersRejectsDuplicateInFlightTransfer ensures a second POST for
+// a server that is already transferring is rejected outright: it must never
+// join the live transfer, because its failure cleanup would delete the files
+// the original request is still extracting.
+func TestPostTransfersRejectsDuplicateInFlightTransfer(t *testing.T) {
+	client := &transferTestRemoteClient{}
+	manager, trnsfr := newTransferFixture(t, client)
+	dataPath := trnsfr.Server.Filesystem().Path()
+	c, recorder := newTransferRequestContext(t, manager, signTransferToken(t, trnsfr.Server.ID()))
+
+	postTransfers(c)
+
+	if c.Writer.Status() != http.StatusConflict {
+		t.Fatalf("expected duplicate transfer request to return 409, got %d body %s", c.Writer.Status(), recorder.Body.String())
+	}
+	if _, err := os.Stat(dataPath); err != nil {
+		t.Fatalf("expected the in-flight transfer files to be untouched, stat err: %v", err)
+	}
+	if transfer.Incoming().Get(trnsfr.Server.ID()) == nil {
+		t.Fatal("expected the in-flight transfer to remain registered")
+	}
+	if !trnsfr.Server.IsTransferring() {
+		t.Fatal("expected the in-flight transfer to keep its transferring flag")
+	}
+}
+
+// TestPostTransfersRejectsServerAlreadyOnNode ensures a replayed transfer for
+// a server this node already hosts is rejected before any transfer state is
+// created, so the failure cleanup can never delete a live server's data.
+func TestPostTransfersRejectsServerAlreadyOnNode(t *testing.T) {
+	client := &transferTestRemoteClient{}
+	manager, trnsfr := newTransferFixture(t, client)
+	transfer.Incoming().Remove(trnsfr)
+	trnsfr.Server.SetTransferring(false)
+	dataPath := trnsfr.Server.Filesystem().Path()
+	c, recorder := newTransferRequestContext(t, manager, signTransferToken(t, trnsfr.Server.ID()))
+
+	postTransfers(c)
+
+	if c.Writer.Status() != http.StatusConflict {
+		t.Fatalf("expected replayed transfer request to return 409, got %d body %s", c.Writer.Status(), recorder.Body.String())
+	}
+	if _, err := os.Stat(dataPath); err != nil {
+		t.Fatalf("expected the live server files to be untouched, stat err: %v", err)
+	}
+	if _, ok := manager.Get(trnsfr.Server.ID()); !ok {
+		t.Fatal("expected the live server to remain in the manager")
+	}
 }
 
 // TestFinalizeFailedTransferDeletesFilesWhenPanelReachable covers the disk

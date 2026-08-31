@@ -54,43 +54,52 @@ func postTransfers(c *gin.Context) {
 		return
 	}
 
-	// Get or create a new transfer instance for this server.
-	var (
-		ctx    context.Context
-		cancel context.CancelFunc
-	)
-	trnsfr := transfer.Incoming().Get(u.String())
-	if trnsfr == nil {
-		// TODO: should this use the request context?
-		trnsfr = transfer.New(c, nil)
-
-		ctx, cancel = context.WithCancel(trnsfr.Context())
-		defer cancel()
-
-		i, err := installer.New(ctx, manager, installer.ServerDetails{
-			UUID:              u.String(),
-			StartOnCompletion: false,
+	// Only one request may drive a transfer for a server. A duplicate POST
+	// would share the in-flight transfer, and its failure cleanup would
+	// delete the files the original request is still extracting.
+	if transfer.Incoming().Get(u.String()) != nil {
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": "A transfer for this server is already in progress.",
 		})
-		if err != nil {
-			// trnsfr.Server is only assigned once the installer succeeds, so
-			// this failure report must use the UUID parsed from the token.
-			if err := manager.Client().SetTransferStatus(context.Background(), u.String(), false); err != nil {
-				trnsfr.Log().WithField("status", false).WithError(err).Error("failed to set transfer status")
-			}
-			middleware.CaptureAndAbort(c, err)
-			return
-		}
-
-		i.Server().SetTransferring(true)
-		manager.Add(i.Server())
-
-		// We add the transfer to the list of transfers once we have a server instance to use.
-		trnsfr.Server = i.Server()
-		transfer.Incoming().Add(trnsfr)
-	} else {
-		ctx, cancel = context.WithCancel(trnsfr.Context())
-		defer cancel()
+		return
 	}
+
+	// A server that already exists on this node can never be the destination
+	// of a transfer. Accepting a stray or replayed request would end with the
+	// failure cleanup deleting the live server's data directory.
+	if _, exists := manager.Get(u.String()); exists {
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": "The server this transfer is for already exists on this node.",
+		})
+		return
+	}
+
+	// TODO: should this use the request context?
+	trnsfr := transfer.New(c, nil)
+
+	ctx, cancel := context.WithCancel(trnsfr.Context())
+	defer cancel()
+
+	i, err := installer.New(ctx, manager, installer.ServerDetails{
+		UUID:              u.String(),
+		StartOnCompletion: false,
+	})
+	if err != nil {
+		// trnsfr.Server is only assigned once the installer succeeds, so
+		// this failure report must use the UUID parsed from the token.
+		if err := manager.Client().SetTransferStatus(context.Background(), u.String(), false); err != nil {
+			trnsfr.Log().WithField("status", false).WithError(err).Error("failed to set transfer status")
+		}
+		middleware.CaptureAndAbort(c, err)
+		return
+	}
+
+	i.Server().SetTransferring(true)
+	manager.Add(i.Server())
+
+	// We add the transfer to the list of transfers once we have a server instance to use.
+	trnsfr.Server = i.Server()
+	transfer.Incoming().Add(trnsfr)
 
 	// Any errors past this point (until the transfer is complete) will abort
 	// the transfer.

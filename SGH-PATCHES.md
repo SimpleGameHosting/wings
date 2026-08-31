@@ -195,6 +195,8 @@ Every SGH modification MUST be registered here before its work is considered com
 
 - What: the deferred transfer completion in `postTransfers` moves into `finalizeIncomingTransfer`, which deletes a failed transfer's extracted files unconditionally, notifies the panel afterwards, and always clears the transferring flag before publishing the real status event.
   Upstream only deleted the files when the panel status call also failed, and its early return on that error left the server marked as transferring forever.
+  `postTransfers` also rejects a POST with HTTP 409 while a transfer for the same server is in flight, and refuses transfers for a server this node already hosts.
+  Only the single request that created a transfer can therefore reach the cleanup, so a duplicate or replayed request can never delete files that a live extraction or a hosted server still owns.
 - Why: every ordinarily failed or interrupted transfer orphaned the server's full data directory on the destination node with nothing left to clean it up, leaking disk fleet-wide (upstream issue pterodactyl/panel#5555, upstream PR pterodactyl/wings#298).
 - Files: `router/router_transfer.go`, `router/router_transfer_test.go`.
 - Conflict risk on rebase: low-medium; the deferred body is upstream-owned, so re-apply the extraction if upstream restructures `postTransfers`.
