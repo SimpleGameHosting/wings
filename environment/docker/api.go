@@ -50,12 +50,18 @@ func configure(c *client.Client) {
 // standard "encoding/json" shows its performance woes badly even with single
 // containers running.
 func (e *Environment) ContainerInspect(ctx context.Context) (types.ContainerJSON, error) {
-	configure(e.client)
+	// The performant path reads transport settings out of the concrete Docker
+	// client, so any other client implementation, such as a test fake, always
+	// uses the standard inspect call.
+	concrete, isConcreteClient := e.client.(*client.Client)
+	if isConcreteClient {
+		configure(concrete)
+	}
 
 	// Support feature flagging of this functionality so that if something goes
 	// wrong for now it is easy enough for people to switch back to the older method
 	// of fetching stats.
-	if !fastEnabled {
+	if !isConcreteClient || !fastEnabled {
 		return e.client.ContainerInspect(ctx, e.Id)
 	}
 

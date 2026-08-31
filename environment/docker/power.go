@@ -280,15 +280,30 @@ func (e *Environment) WaitForStop(ctx context.Context, duration time.Duration, t
 func (e *Environment) SignalContainer(ctx context.Context, signal string) error {
 	c, err := e.ContainerInspect(ctx)
 	if err != nil {
-		// Treat missing containers as an okay error state, means it is obviously
-		// already terminated at this point.
-		if client.IsErrNotFound(err) {
-			return nil
+		if !client.IsErrNotFound(err) {
+			return errors.WithStack(err)
 		}
-		return errors.WithStack(err)
+
+		// A booting server has not created its container yet; pretending the
+		// signal worked would mark a starting server offline while its boot
+		// keeps running, so report the situation honestly instead.
+		if e.st.Load() == environment.ProcessStartingState {
+			return errors.New("environment/docker: cannot signal container: it has not been created yet, try again shortly")
+		}
+
+		// Otherwise treat a missing container as an okay error state, it means
+		// the process is obviously already terminated at this point.
+		return nil
 	}
 
 	if !c.State.Running {
+		// A container that exists but has not started mid-boot is aborted by
+		// force removing it. The boot goroutine's own error handling then
+		// walks the state to offline without tripping crash detection.
+		if e.st.Load() == environment.ProcessStartingState {
+			return errors.WithStack(e.client.ContainerRemove(ctx, e.Id, container.RemoveOptions{Force: true}))
+		}
+
 		// If the container is not running, but we're not already in a stopped state go ahead
 		// and update things to indicate we should be completely stopped now. Set to stopping
 		// first so crash detection is not triggered.
@@ -309,12 +324,18 @@ func (e *Environment) SignalContainer(ctx context.Context, signal string) error 
 	return nil
 }
 
-// Terminate forcefully terminates the container using the signal provided.
-// then sets its state to stopped.
+// Terminate forcefully terminates the container using the signal provided,
+// then sets its state to stopped. A server that is still booting is left in
+// the starting state: its container was force removed instead, and the boot's
+// own failure handling owns the transition to offline.
 func (e *Environment) Terminate(ctx context.Context, signal string) error {
 	// Send the signal to the container to kill it
 	if err := e.SignalContainer(ctx, signal); err != nil {
 		return errors.WithStack(err)
+	}
+
+	if e.st.Load() == environment.ProcessStartingState {
+		return nil
 	}
 
 	// We expect Terminate to instantly kill the container

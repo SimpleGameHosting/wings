@@ -38,8 +38,10 @@ type Environment struct {
 
 	meta *Metadata
 
-	// The Docker client being used for this instance.
-	client *client.Client
+	// The Docker client being used for this instance. This is the interface
+	// type so tests can substitute a fake; production code always assigns the
+	// concrete client from environment.Docker().
+	client client.APIClient
 
 	// Controls the hijacked response stream which exists only when we're attached to
 	// the running container instance.

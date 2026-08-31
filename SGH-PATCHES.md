@@ -164,6 +164,16 @@ Every SGH modification MUST be registered here before its work is considered com
 - Files: `server/backup.go`, `server/backup_restore_test.go`.
 - Conflict risk on rebase: low; localized to the restore path plus a test.
 
+### router/environment: honest power actions during boot
+
+- What: `postServerPower` returns HTTP 409 when a no-wait start, stop, or restart arrives while another power action holds the lock, instead of accepting the request and silently dropping it in the background goroutine; kill stays exempt and `wait_seconds` callers keep their queueing behavior.
+  `SignalContainer` no longer walks a booting server to offline: a created-but-unstarted container is force removed so the boot's own failure handling settles the state, and a kill before the container exists returns an error instead of faking success.
+  `Terminate` leaves a still-starting environment's state untouched for the same reason, and a kill that lands while the boot is still recreating its container can be outrun by the boot - the state stays truthful and a retried kill wins.
+  The docker `Environment` client field becomes the `client.APIClient` interface, with the performant-inspect fast path guarded to the concrete client, so the termination path is testable with a fake client.
+- Why: power buttons lied during boot - stops vanished behind a 202 while kills marked a booting server offline and could trip crash detection, desyncing the panel and feeding false crashes to the SGH crash analyzer (upstream issue pterodactyl/panel#5712).
+- Files: `router/router_server.go`, `router/router_server_power_test.go`, `environment/docker/power.go`, `environment/docker/power_test.go`, `environment/docker/environment.go`, `environment/docker/api.go`, `environment/docker/cgroup_burst.go`.
+- Conflict risk on rebase: medium; `SignalContainer`, `Terminate`, and `postServerPower` are upstream-owned surfaces, and the client field type change surfaces in any upstream change to `environment/docker`.
+
 ### files: preserve symlinks during extraction and restore
 
 - What: `extractStream` recreates symlink entries through `Filesystem.Symlink` instead of writing them out as files, `RestoreCallback` now carries `archives.FileInfo` so `restoreBackupEntry` sees link targets and restores links, and `Filesystem.Symlink` creates missing parent directories and lchowns the link itself.

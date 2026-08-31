@@ -82,6 +82,19 @@ func postServerPower(c *gin.Context) {
 		return
 	}
 
+	// A request that would not wait for the power lock is silently dropped by
+	// the background goroutine when another action holds it, typically while a
+	// server is booting. Reject it here so the caller learns about the
+	// conflict, mirroring the websocket handler and the reinstall endpoint.
+	// Termination stays exempt as the escape hatch for stuck servers, and
+	// callers that pass wait_seconds keep their queueing behavior.
+	if data.Action != server.PowerActionTerminate && data.WaitSeconds <= 0 && s.ExecutingPowerAction() {
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": "A power action is already being processed for this server, please try again later.",
+		})
+		return
+	}
+
 	// Pass the actual heavy processing off to a separate thread to handle so that
 	// we can immediately return a response from the server. Some of these actions
 	// can take quite some time, especially stopping or restarting.
