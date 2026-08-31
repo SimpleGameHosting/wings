@@ -163,3 +163,11 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: critical fix - restores could produce incorrect/missing directories from archived backups.
 - Files: `server/backup.go`, `server/backup_restore_test.go`.
 - Conflict risk on rebase: low; localized to the restore path plus a test.
+
+### router: always clean up failed incoming transfers
+
+- What: the deferred transfer completion in `postTransfers` moves into `finalizeIncomingTransfer`, which deletes a failed transfer's extracted files unconditionally, notifies the panel afterwards, and always clears the transferring flag before publishing the real status event.
+  Upstream only deleted the files when the panel status call also failed, and its early return on that error left the server marked as transferring forever.
+- Why: every ordinarily failed or interrupted transfer orphaned the server's full data directory on the destination node with nothing left to clean it up, leaking disk fleet-wide (upstream issue pterodactyl/panel#5555, upstream PR pterodactyl/wings#298).
+- Files: `router/router_transfer.go`, `router/router_transfer_test.go`.
+- Conflict risk on rebase: low-medium; the deferred body is upstream-owned, so re-apply the extraction if upstream restructures `postTransfers`.

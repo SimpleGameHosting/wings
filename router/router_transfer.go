@@ -94,37 +94,9 @@ func postTransfers(c *gin.Context) {
 	// the transfer.
 
 	successful := false
-	defer func(ctx context.Context, trnsfr *transfer.Transfer) {
-		// Remove the transfer from the list of incoming transfers.
-		transfer.Incoming().Remove(trnsfr)
-
-		if !successful {
-			trnsfr.Server.Events().Publish(server.TransferStatusEvent, "failure")
-			manager.Remove(func(match *server.Server) bool {
-				return match.ID() == trnsfr.Server.ID()
-			})
-		}
-
-		if err := manager.Client().SetTransferStatus(context.Background(), trnsfr.Server.ID(), successful); err != nil {
-			// Only delete the files if the transfer actually failed, otherwise we could have
-			// unrecoverable data-loss.
-			if !successful && err != nil {
-				// Delete all extracted files.
-				go func(trnsfr *transfer.Transfer) {
-					_ = trnsfr.Server.Filesystem().UnixFS().Close()
-					if err := os.RemoveAll(trnsfr.Server.Filesystem().Path()); err != nil && !os.IsNotExist(err) {
-						trnsfr.Log().WithError(err).Warn("failed to delete local server files")
-					}
-				}(trnsfr)
-			}
-
-			trnsfr.Log().WithField("status", successful).WithError(err).Error("failed to set transfer status on panel")
-			return
-		}
-
-		trnsfr.Server.SetTransferring(false)
-		trnsfr.Server.Events().Publish(server.TransferStatusEvent, "success")
-	}(ctx, trnsfr)
+	defer func() {
+		finalizeIncomingTransfer(manager, trnsfr, successful)
+	}()
 
 	mediaType, params, err := mime.ParseMediaType(c.GetHeader("Content-Type"))
 	if err != nil {
@@ -252,6 +224,41 @@ out:
 	// The rest of the logic for ensuring the server is unlocked and everything
 	// is handled in the deferred function above.
 	trnsfr.Log().Debug("done!")
+}
+
+// finalizeIncomingTransfer settles an incoming transfer once the request body
+// has been fully processed. A failed transfer must always drop the server and
+// its extracted files from this node, and the panel is notified only after
+// that cleanup so a retried transfer cannot race a directory that is still
+// being deleted.
+func finalizeIncomingTransfer(manager *server.Manager, trnsfr *transfer.Transfer, successful bool) {
+	// Remove the transfer from the list of incoming transfers.
+	transfer.Incoming().Remove(trnsfr)
+
+	status := "success"
+	if !successful {
+		status = "failure"
+
+		// First, drop the half-transferred server and its extracted files so a
+		// failed transfer cannot leak disk space on this node...
+		manager.Remove(func(match *server.Server) bool {
+			return match.ID() == trnsfr.Server.ID()
+		})
+
+		_ = trnsfr.Server.Filesystem().UnixFS().Close()
+		if err := os.RemoveAll(trnsfr.Server.Filesystem().Path()); err != nil && !os.IsNotExist(err) {
+			trnsfr.Log().WithError(err).Warn("failed to delete local server files for failed transfer")
+		}
+	}
+
+	// Notify the panel after cleanup; a failed status call must not strand the
+	// files or leave the server marked as transferring...
+	if err := manager.Client().SetTransferStatus(context.Background(), trnsfr.Server.ID(), successful); err != nil {
+		trnsfr.Log().WithField("status", status).WithError(err).Error("failed to set transfer status on panel")
+	}
+
+	trnsfr.Server.SetTransferring(false)
+	trnsfr.Server.Events().Publish(server.TransferStatusEvent, status)
 }
 
 // deleteTransfer cancels an incoming transfer for a server.
