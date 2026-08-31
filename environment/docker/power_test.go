@@ -69,20 +69,58 @@ func newTerminationTestEnvironment(fake *fakeDockerClient, state string) *Enviro
 // TestTerminateDoesNotMarkABootingServerOffline covers half of
 // pterodactyl/panel#5712: a kill sent while the container was created but not
 // yet started marked the booting server offline while the boot kept running.
-// The created container must instead be force removed so the boot's own error
-// handling settles the state.
+// The created container must instead be force removed with the published
+// state walked to stopping first, so that neither the attach stream's own
+// offline transition nor the boot's error handling can look like a crash.
 func TestTerminateDoesNotMarkABootingServerOffline(t *testing.T) {
 	fake := &fakeDockerClient{inspect: inspectWithState(false, "created")}
+	e := newTerminationTestEnvironment(fake, environment.ProcessStartingState)
+
+	stateEvents := make(chan []byte, 8)
+	e.Events().On(stateEvents)
+	defer e.Events().Off(stateEvents)
+
+	if err := e.Terminate(context.Background(), "SIGKILL"); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.State(); got != environment.ProcessStoppingState {
+		t.Fatalf("expected environment to publish the stopping state, got %q", got)
+	}
+	if !fake.removedForced {
+		t.Fatal("expected the created container to be force removed so the boot aborts")
+	}
+
+	// The environment must never publish offline itself here; the boot's
+	// failure handling owns that transition after the removal...
+	for {
+		select {
+		case raw := <-stateEvents:
+			event := events.MustDecode(raw)
+			if state, _ := event.Data.(string); state == environment.ProcessOfflineState {
+				t.Fatal("expected terminate not to publish an offline state for a booting server")
+			}
+		default:
+			return
+		}
+	}
+}
+
+// TestTerminateDuringLateBootLeavesOfflineToTheStream ensures a kill that
+// catches the container after it started, while the environment still says
+// starting, kills the container but leaves the offline transition to the
+// attach stream so crash detection sees stopping as the previous state.
+func TestTerminateDuringLateBootLeavesOfflineToTheStream(t *testing.T) {
+	fake := &fakeDockerClient{inspect: inspectWithState(true, "running")}
 	e := newTerminationTestEnvironment(fake, environment.ProcessStartingState)
 
 	if err := e.Terminate(context.Background(), "SIGKILL"); err != nil {
 		t.Fatal(err)
 	}
-	if got := e.State(); got != environment.ProcessStartingState {
-		t.Fatalf("expected environment to stay in the starting state, got %q", got)
+	if fake.killedSignal != "SIGKILL" {
+		t.Fatalf("expected SIGKILL to be sent to the running container, got %q", fake.killedSignal)
 	}
-	if !fake.removedForced {
-		t.Fatal("expected the created container to be force removed so the boot aborts")
+	if got := e.State(); got != environment.ProcessStoppingState {
+		t.Fatalf("expected the state to stop at stopping until the stream closes, got %q", got)
 	}
 }
 

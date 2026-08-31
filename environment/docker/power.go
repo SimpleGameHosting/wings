@@ -298,9 +298,12 @@ func (e *Environment) SignalContainer(ctx context.Context, signal string) error 
 
 	if !c.State.Running {
 		// A container that exists but has not started mid-boot is aborted by
-		// force removing it. The boot goroutine's own error handling then
-		// walks the state to offline without tripping crash detection.
+		// force removing it. Publish the stopping state first: crash
+		// detection fires on a starting-to-offline transition, and both the
+		// attach stream's close handler and the boot's own error handling
+		// will drive the state to offline once the container is gone.
 		if e.st.Load() == environment.ProcessStartingState {
+			e.SetState(environment.ProcessStoppingState)
 			return errors.WithStack(e.client.ContainerRemove(ctx, e.Id, container.RemoveOptions{Force: true}))
 		}
 
@@ -325,16 +328,21 @@ func (e *Environment) SignalContainer(ctx context.Context, signal string) error 
 }
 
 // Terminate forcefully terminates the container using the signal provided,
-// then sets its state to stopped. A server that is still booting is left in
-// the starting state: its container was force removed instead, and the boot's
-// own failure handling owns the transition to offline.
+// then sets its state to stopped. A server that was still booting when the
+// kill arrived is only walked to stopping here: the attach stream's close
+// handler and the boot's failure handling own the final transition to
+// offline, and neither can then look like a crash.
 func (e *Environment) Terminate(ctx context.Context, signal string) error {
+	// Capture this before signalling, because a successful signal walks the
+	// state machine past starting...
+	wasStarting := e.st.Load() == environment.ProcessStartingState
+
 	// Send the signal to the container to kill it
 	if err := e.SignalContainer(ctx, signal); err != nil {
 		return errors.WithStack(err)
 	}
 
-	if e.st.Load() == environment.ProcessStartingState {
+	if wasStarting {
 		return nil
 	}
 
