@@ -156,3 +156,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: replaces the retired `backup_compression.yml` ansible enforcement - SGH wants maximum backup compression fleet-wide; a binary default cannot drift. Note: an explicit `compression_level` in a node's config.yml still overrides this.
 - Files: `config/config.go`.
 - Conflict risk on rebase: low; one struct-tag value.
+
+### server: restore archived directories correctly
+
+- What: backup restore recreates directory entries from the archive instead of mis-handling them, so restored servers keep their directory structure.
+- Why: critical fix - restores could produce incorrect/missing directories from archived backups.
+- Files: `server/backup.go`, `server/backup_restore_test.go`.
+- Conflict risk on rebase: low; localized to the restore path plus a test.
