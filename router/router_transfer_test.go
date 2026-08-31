@@ -3,13 +3,20 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/gbrlsnchs/jwt/v3"
 
 	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/remote"
+	"github.com/pterodactyl/wings/router/tokens"
 	wserver "github.com/pterodactyl/wings/server"
 	"github.com/pterodactyl/wings/server/transfer"
 )
@@ -19,16 +26,33 @@ import (
 type transferTestRemoteClient struct {
 	remote.Client
 
-	mu        sync.Mutex
-	statusErr error
-	statusSet []bool
+	mu               sync.Mutex
+	statusErr        error
+	configurationErr error
+	statusSet        []bool
+	statusServers    []string
 }
 
-func (c *transferTestRemoteClient) SetTransferStatus(_ context.Context, _ string, successful bool) error {
+func (c *transferTestRemoteClient) SetTransferStatus(_ context.Context, uuid string, successful bool) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.statusSet = append(c.statusSet, successful)
+	c.statusServers = append(c.statusServers, uuid)
 	return c.statusErr
+}
+
+// GetServerConfiguration simulates the panel configuration lookup a brand-new
+// incoming transfer performs. Tests opt in by setting configurationErr; any
+// other call is unexpected and fails loudly.
+func (c *transferTestRemoteClient) GetServerConfiguration(_ context.Context, _ string) (remote.ServerConfigurationResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.configurationErr == nil {
+		panic("transferTestRemoteClient: unexpected GetServerConfiguration call")
+	}
+
+	return remote.ServerConfigurationResponse{}, c.configurationErr
 }
 
 // statuses returns a copy of the recorded transfer status calls.
@@ -36,6 +60,14 @@ func (c *transferTestRemoteClient) statuses() []bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]bool(nil), c.statusSet...)
+}
+
+// statusServerIDs returns a copy of the server UUIDs the recorded transfer
+// status calls were made for.
+func (c *transferTestRemoteClient) statusServerIDs() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.statusServers...)
 }
 
 // newTransferFixture builds a manager-registered server with a real filesystem
@@ -117,6 +149,48 @@ func TestFinalizeFailedTransferDeletesFilesWhenPanelUnreachable(t *testing.T) {
 	}
 	if trnsfr.Server.IsTransferring() {
 		t.Fatal("expected transferring flag to clear even when the panel status call fails")
+	}
+}
+
+// TestPostTransfersReportsFailureWhenInstallerCreationFails drives a new
+// incoming transfer through the real router with a valid transfer token while
+// the panel cannot serve the server configuration. The handler must report
+// the failed transfer to the panel using the UUID from the token subject:
+// upstream dereferenced the transfer's not-yet-assigned server here, so the
+// handler panicked and the panel never learned the transfer failed.
+func TestPostTransfersReportsFailureWhenInstallerCreationFails(t *testing.T) {
+	client := &transferTestRemoteClient{configurationErr: errors.New("panel is unreachable")}
+	manager := wserver.NewEmptyManager(client)
+	engine := Configure(manager, client)
+
+	// Sign a transfer token for a server this node has never seen, exactly
+	// like the panel does when it initiates a transfer to a new node...
+	serverID := "0a4f26a6-4c84-46b4-9e5d-6f68e4f0a1c9"
+	signed, err := jwt.Sign(&tokens.TransferPayload{
+		Payload: jwt.Payload{
+			Subject:        serverID,
+			ExpirationTime: jwt.NumericDate(time.Now().Add(10 * time.Minute)),
+		},
+		Scoped: tokens.Scoped{Scope: string(tokens.ServerTransfer)},
+	}, config.GetJwtAlgorithm())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/transfers", nil)
+	req.Header.Set("Authorization", "Bearer "+string(signed))
+	res := httptest.NewRecorder()
+
+	engine.ServeHTTP(res, req)
+
+	if got := client.statuses(); len(got) != 1 || got[0] {
+		t.Fatalf("expected exactly one failed transfer status call to the panel, got %v", got)
+	}
+	if got := client.statusServerIDs(); len(got) != 1 || got[0] != serverID {
+		t.Fatalf("expected the failed status call to use the token subject %q, got %v", serverID, got)
+	}
+	if res.Code != http.StatusInternalServerError || !strings.Contains(res.Body.String(), "error") {
+		t.Fatalf("expected a handled error response, got status %d with body %q", res.Code, res.Body.String())
 	}
 }
 

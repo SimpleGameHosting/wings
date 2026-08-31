@@ -198,3 +198,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: every ordinarily failed or interrupted transfer orphaned the server's full data directory on the destination node with nothing left to clean it up, leaking disk fleet-wide (upstream issue pterodactyl/panel#5555, upstream PR pterodactyl/wings#298).
 - Files: `router/router_transfer.go`, `router/router_transfer_test.go`.
 - Conflict risk on rebase: low-medium; the deferred body is upstream-owned, so re-apply the extraction if upstream restructures `postTransfers`.
+
+### router: report failed transfer creation with the token UUID
+
+- What: when `installer.New` fails for a brand-new incoming transfer, `postTransfers` now reports the failed status to the panel using the UUID parsed from the transfer token instead of dereferencing `trnsfr.Server`, which is only assigned after the installer succeeds.
+- Why: any installer failure for a fresh transfer (unreachable panel, bad server configuration) dereferenced the nil server and panicked, so the source node got a blank 500 and the panel was never told the transfer failed, leaving it stuck in a transferring state (pre-existing upstream bug, still present in v1.13.3).
+- Files: `router/router_transfer.go`, `router/router_transfer_test.go`.
+- Conflict risk on rebase: low; one line in the error branch plus an additive end-to-end test.
