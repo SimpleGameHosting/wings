@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -20,14 +21,20 @@ const testServerUUID = "8d2b3f6a-0000-4000-8000-000000000000"
 // signing key from, so it cannot be left empty.
 func setNodeConfig(t *testing.T, crashDetectionEnabled bool) {
 	t.Helper()
-	config.Set(&config.Configuration{
+	cfg := config.Configuration{
 		AuthenticationToken: "abc",
 		System: config.SystemConfiguration{
 			RootDirectory:     "/server",
 			DiskCheckInterval: 150,
 			CrashDetection:    config.CrashDetection{CrashDetectionEnabled: crashDetectionEnabled},
 		},
-	})
+	}
+
+	// Chown written files to the test process itself so filesystem helpers
+	// do not need root (CI runners are unprivileged).
+	cfg.System.User.Uid = os.Getuid()
+	cfg.System.User.Gid = os.Getgid()
+	config.Set(&cfg)
 }
 
 // syncSettings runs SyncWithConfiguration with a raw Panel settings payload.
