@@ -168,8 +168,10 @@ Every SGH modification MUST be registered here before its work is considered com
 
 - What: `postServerDecompressFiles` validates the archive synchronously with the new `Filesystem.CanDecompressFile` (an open plus a header sniff), then returns HTTP 202 and runs the disk-space walk and the extraction in a background goroutine tied to the server context, reporting start, failure, and completion through daemon console lines.
   Unknown-format archives now return their 400 deterministically; previously servers without a disk limit skipped the synchronous format check entirely and failed through the generic error path.
+  The background goroutine runs under a recovery guard because the archive bytes driving the parser are tenant controlled, and a panic would otherwise crash the whole daemon instead of failing one request.
+  `Filesystem.TryStartDecompression` single-flights each archive, so a duplicate request returns HTTP 409 instead of racing a competing extraction into the same tree.
 - Why: multi-gigabyte modpack archives outlived proxy timeouts, so users saw 504s while the extraction continued invisibly and retried into double extractions (upstream issue pterodactyl/panel#2878, open since 2020).
-- Files: `router/router_server_files.go`, `router/router_server_files_decompress_test.go`, `server/filesystem/compress.go`.
+- Files: `router/router_server_files.go`, `router/router_server_files_decompress_test.go`, `server/filesystem/compress.go`, `server/filesystem/compress_test.go`, `server/filesystem/filesystem.go`.
 - Conflict risk on rebase: low-medium; the handler body is upstream-owned but self-contained, and `CanDecompressFile` is additive.
 
 ### router/environment: honest power actions during boot

@@ -30,6 +30,12 @@ type Filesystem struct {
 	diskCheckInterval time.Duration
 	denylist          *ignore.GitIgnore
 
+	// Tracks archives currently being decompressed in the background so a
+	// duplicate request cannot start a competing extraction; see
+	// TryStartDecompression.
+	decompressInFlightMu sync.Mutex
+	decompressInFlight   map[string]struct{}
+
 	isTest bool
 }
 

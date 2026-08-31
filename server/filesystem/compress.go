@@ -180,6 +180,31 @@ func (fs *Filesystem) DecompressFile(ctx context.Context, dir string, file strin
 	})
 }
 
+// TryStartDecompression reserves the named archive for a single background
+// decompression and returns the release function for that reservation. It
+// returns false when a decompression of the same archive is already running,
+// so duplicate requests cannot race a competing extraction into the tree.
+func (fs *Filesystem) TryStartDecompression(dir string, file string) (func(), bool) {
+	key := filepath.Clean(filepath.Join(dir, file))
+
+	fs.decompressInFlightMu.Lock()
+	defer fs.decompressInFlightMu.Unlock()
+
+	if fs.decompressInFlight == nil {
+		fs.decompressInFlight = make(map[string]struct{})
+	}
+	if _, busy := fs.decompressInFlight[key]; busy {
+		return nil, false
+	}
+
+	fs.decompressInFlight[key] = struct{}{}
+	return func() {
+		fs.decompressInFlightMu.Lock()
+		defer fs.decompressInFlightMu.Unlock()
+		delete(fs.decompressInFlight, key)
+	}, true
+}
+
 // CanDecompressFile verifies that the named archive exists and is in a format
 // Wings can extract, reading only the archive header. It lets request
 // handlers fail fast while the full extraction runs in the background.

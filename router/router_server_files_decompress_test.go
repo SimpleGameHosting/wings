@@ -17,6 +17,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/pterodactyl/wings/config"
+	"github.com/pterodactyl/wings/events"
 	"github.com/pterodactyl/wings/remote"
 	wserver "github.com/pterodactyl/wings/server"
 )
@@ -122,6 +123,54 @@ func TestPostServerDecompressFilesRejectsUnknownFormatSynchronously(t *testing.T
 
 	if c.Writer.Status() != http.StatusBadRequest {
 		t.Fatalf("expected unknown archive format to return 400, got %d body %s", c.Writer.Status(), recorder.Body.String())
+	}
+}
+
+// TestPostServerDecompressFilesRejectsConcurrentDuplicate ensures a second
+// request for an archive that is already being decompressed is refused
+// instead of spawning a competing extraction into the same tree.
+func TestPostServerDecompressFilesRejectsConcurrentDuplicate(t *testing.T) {
+	c, recorder, s := newDecompressContext(t, `{"root":"/","file":"bundle.tar.gz"}`)
+	writeTestTarball(t, s, "bundle.tar.gz")
+
+	release, ok := s.Filesystem().TryStartDecompression("/", "bundle.tar.gz")
+	if !ok {
+		t.Fatal("expected the test to be able to reserve the archive first")
+	}
+	defer release()
+
+	postServerDecompressFiles(c)
+
+	if c.Writer.Status() != http.StatusConflict {
+		t.Fatalf("expected duplicate decompression to return 409, got %d body %s", c.Writer.Status(), recorder.Body.String())
+	}
+}
+
+// TestDecompressRecoveryGuardContainsPanics ensures a panic from the archive
+// parser inside the background goroutine is converted into a console message
+// and an error log instead of crashing the whole daemon: the archive bytes
+// driving the parser are tenant controlled.
+func TestDecompressRecoveryGuardContainsPanics(t *testing.T) {
+	_, _, s := newDecompressContext(t, `{}`)
+
+	consoleMessages := make(chan []byte, 4)
+	s.Events().On(consoleMessages)
+	defer s.Events().Off(consoleMessages)
+
+	decompressRecoveryGuard(s, "boom.tar.gz", func() { panic("simulated archive parser panic") })
+
+	select {
+	case raw := <-consoleMessages:
+		event := events.MustDecode(raw)
+		if event.Topic != wserver.ConsoleOutputEvent {
+			t.Fatalf("expected a console output event, got topic %q", event.Topic)
+		}
+		message, _ := event.Data.(string)
+		if !strings.Contains(message, "failed") {
+			t.Fatalf("expected the console message to report the failure, got %q", message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected a console message after the panic was recovered")
 	}
 }
 

@@ -196,6 +196,33 @@ func TestFilesystem_ExtractStreamSymlinks(t *testing.T) {
 	})
 }
 
+// TestFilesystem_TryStartDecompression covers the single-flight reservation
+// used to stop concurrent background decompressions of the same archive.
+func TestFilesystem_TryStartDecompression(t *testing.T) {
+	fs, _ := NewFs()
+
+	release, ok := fs.TryStartDecompression("/", "bundle.tar.gz")
+	if !ok {
+		t.Fatal("expected the first reservation to succeed")
+	}
+	if _, ok := fs.TryStartDecompression("/", "bundle.tar.gz"); ok {
+		t.Fatal("expected a duplicate reservation to be refused")
+	}
+
+	otherRelease, ok := fs.TryStartDecompression("/other", "bundle.tar.gz")
+	if !ok {
+		t.Fatal("expected a different archive path to reserve independently")
+	}
+	otherRelease()
+
+	release()
+	releaseAgain, ok := fs.TryStartDecompression("/", "bundle.tar.gz")
+	if !ok {
+		t.Fatal("expected the archive to be reservable again after release")
+	}
+	releaseAgain()
+}
+
 // zipWithSymlink builds a zip holding a real file and a symlink pointing at it.
 func zipWithSymlink() ([]byte, error) {
 	var buf bytes.Buffer
