@@ -56,18 +56,24 @@ func postTransfers(c *gin.Context) {
 
 	// Only one request may drive a transfer for a server. A duplicate POST
 	// would share the in-flight transfer, and its failure cleanup would
-	// delete the files the original request is still extracting.
-	if transfer.Incoming().Get(u.String()) != nil {
+	// delete the files the original request is still extracting. The atomic
+	// reservation also covers the window while the installer talks to the
+	// panel and, because its release below is registered before the finalize
+	// defer, it is held until cleanup has completely settled.
+	if !transfer.Incoming().TryReserve(u.String()) {
+		log.WithField("server", u.String()).Info("rejected transfer request: a transfer for this server is already in progress")
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
 			"error": "A transfer for this server is already in progress.",
 		})
 		return
 	}
+	defer transfer.Incoming().Release(u.String())
 
 	// A server that already exists on this node can never be the destination
 	// of a transfer. Accepting a stray or replayed request would end with the
 	// failure cleanup deleting the live server's data directory.
 	if _, exists := manager.Get(u.String()); exists {
+		log.WithField("server", u.String()).Info("rejected transfer request: the server already exists on this node")
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
 			"error": "The server this transfer is for already exists on this node.",
 		})

@@ -485,6 +485,7 @@ func postServerDecompressFiles(c *gin.Context) {
 	// each other writing into the same tree...
 	release, ok := s.Filesystem().TryStartDecompression(data.RootPath, data.File)
 	if !ok {
+		lg.Info("rejected decompression request: this archive is already being decompressed")
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
 			"error": "This archive is already being decompressed, wait for it to finish.",
 		})

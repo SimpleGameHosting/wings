@@ -101,10 +101,25 @@ func TestPostServerDecompressFilesReturnsAcceptedAndExtractsInBackground(t *test
 			if string(contents) != "hello world" {
 				t.Fatalf("expected extracted contents to match, got %q", contents)
 			}
-			return
+			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatal("timed out waiting for the background extraction to finish")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The worker must release its single-flight reservation once it finishes;
+	// otherwise every later decompression of this archive would be rejected
+	// until the daemon restarts...
+	releaseDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if release, ok := s.Filesystem().TryStartDecompression("/", "bundle.tar.gz"); ok {
+			release()
+			return
+		}
+		if time.Now().After(releaseDeadline) {
+			t.Fatal("timed out waiting for the decompression reservation to be released")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

@@ -89,6 +89,7 @@ func postServerPower(c *gin.Context) {
 	// Termination stays exempt as the escape hatch for stuck servers, and
 	// callers that pass wait_seconds keep their queueing behavior.
 	if data.Action != server.PowerActionTerminate && data.WaitSeconds <= 0 && s.ExecutingPowerAction() {
+		s.Log().WithField("action", data.Action).Info("rejected power action: another power action is currently being processed")
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
 			"error": "A power action is already being processed for this server, please try again later.",
 		})

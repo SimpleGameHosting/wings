@@ -189,6 +189,47 @@ func TestPostTransfersRejectsServerAlreadyOnNode(t *testing.T) {
 	if _, ok := manager.Get(trnsfr.Server.ID()); !ok {
 		t.Fatal("expected the live server to remain in the manager")
 	}
+
+	// The rejected request must release its reservation on the way out so a
+	// later legitimate transfer attempt is not locked out...
+	if !transfer.Incoming().TryReserve(trnsfr.Server.ID()) {
+		t.Fatal("expected the reservation to be released after the rejected request returned")
+	}
+	transfer.Incoming().Release(trnsfr.Server.ID())
+}
+
+// TestIncomingTransferReservations covers the atomic reservation that closes
+// the concurrent-duplicate window: only one request may hold a server's
+// reservation, a registered transfer blocks new reservations, and releasing
+// is idempotent so callers can release unconditionally on exit.
+func TestIncomingTransferReservations(t *testing.T) {
+	const reservationID = "11111111-2222-4333-8444-555555555555"
+
+	if !transfer.Incoming().TryReserve(reservationID) {
+		t.Fatal("expected the first reservation to succeed")
+	}
+	t.Cleanup(func() { transfer.Incoming().Release(reservationID) })
+	if transfer.Incoming().TryReserve(reservationID) {
+		t.Fatal("expected a duplicate reservation to fail while held")
+	}
+
+	transfer.Incoming().Release(reservationID)
+	if !transfer.Incoming().TryReserve(reservationID) {
+		t.Fatal("expected a reservation after release to succeed")
+	}
+	transfer.Incoming().Release(reservationID)
+
+	// Releasing an id that was never reserved must be a safe no-op...
+	transfer.Incoming().Release("never-reserved")
+
+	// A registered in-flight transfer must block reservations even when no
+	// explicit reservation is held, so handler fixtures and restarts of the
+	// daemon state cannot be raced...
+	client := &transferTestRemoteClient{}
+	_, trnsfr := newTransferFixture(t, client)
+	if transfer.Incoming().TryReserve(trnsfr.Server.ID()) {
+		t.Fatal("expected the reservation to fail while a transfer is registered")
+	}
 }
 
 // TestFinalizeFailedTransferDeletesFilesWhenPanelReachable covers the disk

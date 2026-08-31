@@ -169,17 +169,18 @@ Every SGH modification MUST be registered here before its work is considered com
 - What: `postServerDecompressFiles` validates the archive synchronously with the new `Filesystem.CanDecompressFile` (an open plus a header sniff), then returns HTTP 202 and runs the disk-space walk and the extraction in a background goroutine tied to the server context, reporting start, failure, and completion through daemon console lines.
   Unknown-format archives now return their 400 deterministically; previously servers without a disk limit skipped the synchronous format check entirely and failed through the generic error path.
   The background goroutine runs under a recovery guard because the archive bytes driving the parser are tenant controlled, and a panic would otherwise crash the whole daemon instead of failing one request.
-  `Filesystem.TryStartDecompression` single-flights each archive, so a duplicate request returns HTTP 409 instead of racing a competing extraction into the same tree.
+  `Filesystem.TryStartDecompression` single-flights each archive, so a duplicate request returns a logged HTTP 409 instead of racing a competing extraction into the same tree.
 - Why: multi-gigabyte modpack archives outlived proxy timeouts, so users saw 504s while the extraction continued invisibly and retried into double extractions (upstream issue pterodactyl/panel#2878, open since 2020).
 - Files: `router/router_server_files.go`, `router/router_server_files_decompress_test.go`, `server/filesystem/compress.go`, `server/filesystem/compress_test.go`, `server/filesystem/filesystem.go`.
 - Conflict risk on rebase: low-medium; the handler body is upstream-owned but self-contained, and `CanDecompressFile` is additive.
 
 ### router/environment: honest power actions during boot
 
-- What: `postServerPower` returns HTTP 409 when a no-wait start, stop, or restart arrives while another power action holds the lock, instead of accepting the request and silently dropping it in the background goroutine; kill stays exempt and `wait_seconds` callers keep their queueing behavior.
+- What: `postServerPower` returns HTTP 409 when a no-wait start, stop, or restart arrives while another power action holds the lock, instead of accepting the request and silently dropping it in the background goroutine; kill stays exempt, `wait_seconds` callers keep their queueing behavior, and each rejection is logged.
   `SignalContainer` no longer walks a booting server to offline: a created-but-unstarted container is walked to the published stopping state and force removed, so neither the attach stream's close handler nor the boot's failure handling can make the kill look like a starting-to-offline crash, and a kill before the container exists returns an error instead of faking success.
   `Terminate` skips its own offline transition for a server that was still starting when the kill arrived, because the attach stream close and the boot's error handling own that final walk.
-  A kill that lands while the boot is still recreating its container can be outrun by the boot - the state stays truthful, a booted server self-heals to running through console detection, and a retried kill wins.
+  A failed container removal restores the published starting state so a boot that keeps its container is never stranded at stopping.
+  A kill that removes a stale container just as the boot recreates it can still be outrun - the state stays truthful and a retried kill wins.
   The docker `Environment` client field becomes the `client.APIClient` interface, with the performant-inspect fast path guarded to the concrete client, so the termination path is testable with a fake client.
 - Why: power buttons lied during boot - stops vanished behind a 202 while kills marked a booting server offline and could trip crash detection, desyncing the panel and feeding false crashes to the SGH crash analyzer (upstream issue pterodactyl/panel#5712).
 - Files: `router/router_server.go`, `router/router_server_power_test.go`, `environment/docker/power.go`, `environment/docker/power_test.go`, `environment/docker/environment.go`, `environment/docker/api.go`, `environment/docker/cgroup_burst.go`.
@@ -198,8 +199,8 @@ Every SGH modification MUST be registered here before its work is considered com
 
 - What: the deferred transfer completion in `postTransfers` moves into `finalizeIncomingTransfer`, which deletes a failed transfer's extracted files unconditionally, notifies the panel afterwards, and always clears the transferring flag before publishing the real status event.
   Upstream only deleted the files when the panel status call also failed, and its early return on that error left the server marked as transferring forever.
-  `postTransfers` also rejects a POST with HTTP 409 while a transfer for the same server is in flight, and refuses transfers for a server this node already hosts.
-  Only the single request that created a transfer can therefore reach the cleanup, so a duplicate or replayed request can never delete files that a live extraction or a hosted server still owns.
+  `postTransfers` claims an atomic per-server reservation before creating any transfer state, holds it until the finalizer has completely settled the transfer, and rejects reserved, in-flight, and already-hosted servers with a logged HTTP 409.
+  The reservation also spans the installer's panel round trip and the cleanup itself, closing the concurrent-duplicate and mid-cleanup replay windows around the destructive file removal.
 - Why: every ordinarily failed or interrupted transfer orphaned the server's full data directory on the destination node with nothing left to clean it up, leaking disk fleet-wide (upstream issue pterodactyl/panel#5555, upstream PR pterodactyl/wings#298).
 - Files: `router/router_transfer.go`, `router/router_transfer_test.go`.
 - Conflict risk on rebase: low-medium; the deferred body is upstream-owned, so re-apply the extraction if upstream restructures `postTransfers`.

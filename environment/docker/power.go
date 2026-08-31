@@ -304,7 +304,13 @@ func (e *Environment) SignalContainer(ctx context.Context, signal string) error 
 		// will drive the state to offline once the container is gone.
 		if e.st.Load() == environment.ProcessStartingState {
 			e.SetState(environment.ProcessStoppingState)
-			return errors.WithStack(e.client.ContainerRemove(ctx, e.Id, container.RemoveOptions{Force: true}))
+			if err := e.client.ContainerRemove(ctx, e.Id, container.RemoveOptions{Force: true}); err != nil {
+				// The boot still owns a live container, so restore the state
+				// it depends on for console-based promotion to running...
+				e.SetState(environment.ProcessStartingState)
+				return errors.WithStack(err)
+			}
+			return nil
 		}
 
 		// If the container is not running, but we're not already in a stopped state go ahead

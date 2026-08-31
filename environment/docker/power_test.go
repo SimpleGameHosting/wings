@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
@@ -27,6 +28,7 @@ type fakeDockerClient struct {
 
 	inspect    container.InspectResponse
 	inspectErr error
+	removeErr  error
 
 	killedSignal  string
 	removedForced bool
@@ -43,7 +45,7 @@ func (f *fakeDockerClient) ContainerKill(_ context.Context, _ string, signal str
 
 func (f *fakeDockerClient) ContainerRemove(_ context.Context, _ string, options container.RemoveOptions) error {
 	f.removedForced = options.Force
-	return nil
+	return f.removeErr
 }
 
 // inspectWithState builds the minimal inspect payload the termination path reads.
@@ -102,6 +104,25 @@ func TestTerminateDoesNotMarkABootingServerOffline(t *testing.T) {
 		default:
 			return
 		}
+	}
+}
+
+// TestTerminateRestoresStartingWhenRemovalFails ensures a docker failure
+// while aborting a boot does not strand the published state at stopping: the
+// boot still owns its container, so the starting state it relies on for
+// console-based promotion must be restored.
+func TestTerminateRestoresStartingWhenRemovalFails(t *testing.T) {
+	fake := &fakeDockerClient{
+		inspect:   inspectWithState(false, "created"),
+		removeErr: errors.New("simulated docker daemon hiccup"),
+	}
+	e := newTerminationTestEnvironment(fake, environment.ProcessStartingState)
+
+	if err := e.Terminate(context.Background(), "SIGKILL"); err == nil {
+		t.Fatal("expected the docker removal failure to be returned to the caller")
+	}
+	if got := e.State(); got != environment.ProcessStartingState {
+		t.Fatalf("expected the starting state to be restored after a failed removal, got %q", got)
 	}
 }
 
