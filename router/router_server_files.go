@@ -3,6 +3,7 @@ package router
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -450,9 +451,10 @@ func postServerCompressFiles(c *gin.Context) {
 	})
 }
 
-// postServerDecompressFiles receives the HTTP request and starts the process
-// of unpacking an archive that exists on the server into the provided RootPath
-// for the server.
+// postServerDecompressFiles validates the archive quickly and then unpacks it
+// in the background: multi-gigabyte archives routinely outlive proxy timeouts,
+// which made users retry and double-extract, so the request must not block on
+// the extraction itself.
 func postServerDecompressFiles(c *gin.Context) {
 	var data struct {
 		RootPath string `json:"root"`
@@ -464,9 +466,11 @@ func postServerDecompressFiles(c *gin.Context) {
 
 	s := middleware.ExtractServer(c)
 	lg := middleware.ExtractLogger(c).WithFields(log.Fields{"root_path": data.RootPath, "file": data.File})
-	lg.Debug("checking if space is available for file decompression")
-	err := s.Filesystem().SpaceAvailableForDecompression(context.Background(), data.RootPath, data.File)
-	if err != nil {
+
+	// Reject a missing or unrecognized archive synchronously so the caller
+	// still gets an immediate, accurate error. This only reads the archive
+	// header; the expensive space walk and extraction run in the background...
+	if err := s.Filesystem().CanDecompressFile(c.Request.Context(), data.RootPath, data.File); err != nil {
 		if filesystem.IsErrorCode(err, filesystem.ErrCodeUnknownArchive) {
 			lg.WithField("error", err).Warn("failed to decompress file: unknown archive format")
 			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "The archive provided is in a format Wings does not understand."})
@@ -476,22 +480,36 @@ func postServerDecompressFiles(c *gin.Context) {
 		return
 	}
 
-	lg.Info("starting file decompression")
-	if err := s.Filesystem().DecompressFile(context.Background(), data.RootPath, data.File); err != nil {
-		// If the file is busy for some reason just return a nicer error to the user since there is not
-		// much we specifically can do. They'll need to stop the running server process in order to overwrite
-		// a file like this.
-		if strings.Contains(err.Error(), "text file busy") {
-			lg.WithField("error", errors.WithStackIf(err)).Warn("failed to decompress file: text file busy")
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{
-				"error": "One or more files this archive is attempting to overwrite are currently in use by another process. Please try again.",
-			})
+	lg.Info("starting background file decompression")
+	go func(s *server.Server, rootPath, file string) {
+		s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Decompressing archive %s, this may take a while...", file))
+		blg := s.Log().WithFields(log.Fields{"root_path": rootPath, "file": file})
+
+		// The server context ties the walk and the extraction to the server's
+		// lifetime rather than the already-completed HTTP request...
+		if err := s.Filesystem().SpaceAvailableForDecompression(s.Context(), rootPath, file); err != nil {
+			s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Unable to decompress %s: not enough disk space is available.", file))
+			blg.WithField("error", err).Warn("failed to decompress file in background: insufficient space")
 			return
 		}
-		middleware.CaptureAndAbort(c, err)
-		return
-	}
-	c.Status(http.StatusNoContent)
+
+		if err := s.Filesystem().DecompressFile(s.Context(), rootPath, file); err != nil {
+			// If the file is busy the user needs to stop the running server
+			// process before this archive can overwrite its files.
+			if strings.Contains(err.Error(), "text file busy") {
+				s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Unable to decompress %s: one or more of its files are in use by the running server process. Stop the server and try again.", file))
+				blg.WithField("error", errors.WithStackIf(err)).Warn("failed to decompress file in background: text file busy")
+				return
+			}
+			s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Decompressing %s failed; contact support if this keeps happening.", file))
+			blg.WithField("error", errors.WithStackIf(err)).Error("failed to decompress file in background")
+			return
+		}
+
+		s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Finished decompressing %s.", file))
+	}(s, data.RootPath, data.File)
+
+	c.Status(http.StatusAccepted)
 }
 
 type chmodFile struct {

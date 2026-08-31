@@ -164,6 +164,14 @@ Every SGH modification MUST be registered here before its work is considered com
 - Files: `server/backup.go`, `server/backup_restore_test.go`.
 - Conflict risk on rebase: low; localized to the restore path plus a test.
 
+### router: decompress archives in the background
+
+- What: `postServerDecompressFiles` validates the archive synchronously with the new `Filesystem.CanDecompressFile` (an open plus a header sniff), then returns HTTP 202 and runs the disk-space walk and the extraction in a background goroutine tied to the server context, reporting start, failure, and completion through daemon console lines.
+  Unknown-format archives now return their 400 deterministically; previously servers without a disk limit skipped the synchronous format check entirely and failed through the generic error path.
+- Why: multi-gigabyte modpack archives outlived proxy timeouts, so users saw 504s while the extraction continued invisibly and retried into double extractions (upstream issue pterodactyl/panel#2878, open since 2020).
+- Files: `router/router_server_files.go`, `router/router_server_files_decompress_test.go`, `server/filesystem/compress.go`.
+- Conflict risk on rebase: low-medium; the handler body is upstream-owned but self-contained, and `CanDecompressFile` is additive.
+
 ### router/environment: honest power actions during boot
 
 - What: `postServerPower` returns HTTP 409 when a no-wait start, stop, or restart arrives while another power action holds the lock, instead of accepting the request and silently dropping it in the background goroutine; kill stays exempt and `wait_seconds` callers keep their queueing behavior.

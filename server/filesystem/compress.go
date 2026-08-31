@@ -180,6 +180,26 @@ func (fs *Filesystem) DecompressFile(ctx context.Context, dir string, file strin
 	})
 }
 
+// CanDecompressFile verifies that the named archive exists and is in a format
+// Wings can extract, reading only the archive header. It lets request
+// handlers fail fast while the full extraction runs in the background.
+func (fs *Filesystem) CanDecompressFile(ctx context.Context, dir string, file string) error {
+	f, err := fs.unixFS.Open(filepath.Join(dir, file))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if _, _, err := archives.Identify(ctx, filepath.Base(file), f); err != nil {
+		if errors.Is(err, archives.NoMatch) {
+			return newFilesystemError(ErrCodeUnknownArchive, err)
+		}
+		return err
+	}
+
+	return nil
+}
+
 // ExtractStreamUnsafe .
 func (fs *Filesystem) ExtractStreamUnsafe(ctx context.Context, dir string, r io.Reader) error {
 	format, input, err := archives.Identify(ctx, "archive.tar.gz", r)
