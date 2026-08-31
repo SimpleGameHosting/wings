@@ -134,12 +134,14 @@ Every SGH modification MUST be registered here before its work is considered com
 
 - What: extends the signed `/upload/file` endpoint with durable resumable sessions using `POST`, `HEAD`, `PATCH`, and `DELETE`.
   Sessions bind the server, user, normalized destination, declared size, and SHA-256 fingerprint in private node metadata, and Wings verifies that fingerprint before publication.
-  Chunks stream through the existing quota-aware filesystem, offsets are serialized per destination, and completion atomically replaces the target from a hidden sibling partial file.
+  Browser credentials travel in authorization headers, refreshed credentials are scoped to one upload identity, and creation is idempotent across a lost response.
+  Chunks stream through the existing quota-aware filesystem, offsets are serialized per destination, and completion durably replaces the target from a hidden sibling partial file with the configured server ownership.
+  Node, server, and user session caps, request-rate limits, concurrent-transfer limits, body deadlines, minimum transfer rates, and HTTP header limits bound resource usage.
+  Metadata is validated and bounded on restart, newly denied paths are removed, expired state is cleaned periodically, and server deletion is serialized against session creation before purging its upload state.
   Existing multipart uploads remain unchanged for Panels that have not enabled the resumable client.
-  Expired sessions and partial files are removed when a server initializes and before new sessions are created.
 - Why: large browser uploads should survive interrupted requests and expiring signed URLs without exposing incomplete worlds, archives, or server binaries at their final destination.
   A dedicated session prevents an existing same-name file from being misidentified as the beginning of a different upload.
-- Files: `internal/ufs/fs_unix.go`, `router/middleware/middleware.go`, `router/middleware/request_error.go`, `router/middleware/request_error_test.go`, `router/router.go`, `router/router_server_files.go`, `router/router_server_upload.go`, `router/router_server_upload_test.go`, `server/filesystem/filesystem.go`, `server/manager.go`, `server/uploads.go`.
+- Files: `.gitignore`, `cmd/root.go`, `config/config.go`, `internal/ufs/fs_unix.go`, `router/middleware/middleware.go`, `router/middleware/request_error.go`, `router/middleware/request_error_test.go`, `router/router.go`, `router/router_server.go`, `router/router_server_files.go`, `router/router_server_upload.go`, `router/router_server_upload_test.go`, `router/tokens/upload.go`, `server/filesystem/filesystem.go`, `server/manager.go`, `server/upload_limits.go`, `server/upload_limits_test.go`, `server/uploads.go`.
 - Conflict risk on rebase: medium.
   The public upload route and filesystem rename implementation are upstream-owned surfaces, while the session manager and protocol handler are additive.
   Recheck signed-token semantics, CORS headers, quota accounting, and atomic replacement behavior after every upstream rebase.

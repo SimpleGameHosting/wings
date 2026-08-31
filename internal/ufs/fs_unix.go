@@ -443,6 +443,16 @@ func (fs *UnixFS) Replace(oldpath, newpath string) error {
 	return fs.rename(oldpath, newpath, true)
 }
 
+// SyncParent commits prior changes to a path's directory entry to stable storage.
+func (fs *UnixFS) SyncParent(path string) error {
+	dirfd, _, closeFd, err := fs.safePath(path)
+	defer closeFd()
+	if err != nil {
+		return err
+	}
+	return ensurePathError(unix.Fsync(dirfd), "fsync", path)
+}
+
 // rename performs the shared path validation for normal and replacing renames.
 func (fs *UnixFS) rename(oldpath, newpath string, replace bool) error {
 	// Simple case: both paths are the same.

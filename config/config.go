@@ -71,6 +71,29 @@ type SftpConfiguration struct {
 	ReadOnly bool `default:"false" yaml:"read_only"`
 }
 
+// ResumableUploadConfiguration defines the hard resource boundaries applied to browser upload sessions.
+type ResumableUploadConfiguration struct {
+	MaxActiveSessionsPerUser    int   `default:"8" json:"max_active_sessions_per_user" yaml:"max_active_sessions_per_user"`
+	MaxActiveSessionsPerServer  int   `default:"32" json:"max_active_sessions_per_server" yaml:"max_active_sessions_per_server"`
+	MaxActiveSessionsNode       int   `default:"1024" json:"max_active_sessions_node" yaml:"max_active_sessions_node"`
+	MaxStoredSessionsNode       int   `default:"16384" json:"max_stored_sessions_node" yaml:"max_stored_sessions_node"`
+	MaxMetadataBytes            int64 `default:"67108864" json:"max_metadata_bytes" yaml:"max_metadata_bytes"`
+	MaxPathBytes                int   `default:"4096" json:"max_path_bytes" yaml:"max_path_bytes"`
+	MaxFilenameBytes            int   `default:"255" json:"max_filename_bytes" yaml:"max_filename_bytes"`
+	CreationRatePerMinuteUser   int   `default:"10" json:"creation_rate_per_minute_user" yaml:"creation_rate_per_minute_user"`
+	CreationRatePerMinuteServer int   `default:"60" json:"creation_rate_per_minute_server" yaml:"creation_rate_per_minute_server"`
+	CreationRatePerMinuteNode   int   `default:"600" json:"creation_rate_per_minute_node" yaml:"creation_rate_per_minute_node"`
+	RequestRatePerMinuteUser    int   `default:"600" json:"request_rate_per_minute_user" yaml:"request_rate_per_minute_user"`
+	RequestRatePerMinuteServer  int   `default:"6000" json:"request_rate_per_minute_server" yaml:"request_rate_per_minute_server"`
+	RequestRatePerMinuteNode    int   `default:"24000" json:"request_rate_per_minute_node" yaml:"request_rate_per_minute_node"`
+	MaxConcurrentPerUser        int   `default:"4" json:"max_concurrent_per_user" yaml:"max_concurrent_per_user"`
+	MaxConcurrentPerServer      int   `default:"16" json:"max_concurrent_per_server" yaml:"max_concurrent_per_server"`
+	MaxConcurrentNode           int   `default:"128" json:"max_concurrent_node" yaml:"max_concurrent_node"`
+	BodyIdleTimeoutSeconds      int   `default:"30" json:"body_idle_timeout_seconds" yaml:"body_idle_timeout_seconds"`
+	MinimumBytesPerSecond       int64 `default:"16384" json:"minimum_bytes_per_second" yaml:"minimum_bytes_per_second"`
+	CleanupIntervalMinutes      int   `default:"5" json:"cleanup_interval_minutes" yaml:"cleanup_interval_minutes"`
+}
+
 // ApiConfiguration defines the configuration for the internal API that is
 // exposed by the Wings webserver.
 type ApiConfiguration struct {
@@ -94,6 +117,18 @@ type ApiConfiguration struct {
 
 	// The maximum size for files uploaded through the Panel in MB.
 	UploadLimit int64 `default:"100" json:"upload_limit" yaml:"upload_limit"`
+
+	// ResumableUploads defines resource and transport limits for browser-managed upload sessions.
+	ResumableUploads ResumableUploadConfiguration `json:"resumable_uploads" yaml:"resumable_uploads"`
+
+	// ReadHeaderTimeoutSeconds limits how long a client may take to send HTTP headers.
+	ReadHeaderTimeoutSeconds int `default:"10" json:"read_header_timeout_seconds" yaml:"read_header_timeout_seconds"`
+
+	// IdleTimeoutSeconds limits how long an unused keep-alive connection remains open.
+	IdleTimeoutSeconds int `default:"60" json:"idle_timeout_seconds" yaml:"idle_timeout_seconds"`
+
+	// MaxHeaderBytes bounds request lines and headers before handlers process them.
+	MaxHeaderBytes int `default:"65536" json:"max_header_bytes" yaml:"max_header_bytes"`
 
 	// A list of IP address of proxies that may send a X-Forwarded-For header to set the true clients IP
 	TrustedProxies []string `json:"trusted_proxies" yaml:"trusted_proxies"`

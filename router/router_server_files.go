@@ -624,7 +624,7 @@ func postServerUploadFiles(c *gin.Context) {
 		return
 	}
 
-	s, token, ok := authenticateServerUpload(c, true)
+	s, token, ok := authenticateServerUpload(c, true, true)
 	if !ok {
 		return
 	}

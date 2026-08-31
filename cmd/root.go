@@ -330,9 +330,12 @@ func rootCmdRun(cmd *cobra.Command, _ []string) {
 	// Create a new HTTP server instance to handle inbound requests from the Panel
 	// and external clients.
 	s := &http.Server{
-		Addr:      api.Host + ":" + strconv.Itoa(api.Port),
-		Handler:   router.Configure(manager, pclient),
-		TLSConfig: config.DefaultTLSConfig,
+		Addr:              api.Host + ":" + strconv.Itoa(api.Port),
+		Handler:           router.Configure(manager, pclient),
+		TLSConfig:         config.DefaultTLSConfig,
+		ReadHeaderTimeout: time.Duration(api.ReadHeaderTimeoutSeconds) * time.Second,
+		IdleTimeout:       time.Duration(api.IdleTimeoutSeconds) * time.Second,
+		MaxHeaderBytes:    api.MaxHeaderBytes,
 	}
 
 	profile, _ := cmd.Flags().GetBool("pprof")

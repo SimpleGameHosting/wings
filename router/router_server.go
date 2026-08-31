@@ -234,6 +234,10 @@ func deleteServer(c *gin.Context) {
 		middleware.CaptureAndAbort(c, err)
 		return
 	}
+	if err := middleware.ExtractManager(c).Uploads().PurgeServer(s); err != nil {
+		middleware.CaptureAndAbort(c, err)
+		return
+	}
 
 	// Once the environment is terminated, remove the server files from the system. This is
 	// done in a separate process since failure is not the end of the world and can be

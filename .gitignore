@@ -42,6 +42,12 @@ wings.exe
 # IDE/Editor files (VS Code)
 /.vscode
 
+# Agent-created linked worktrees
+/.claude/
+
+# Local release artifacts
+/dist/
+
 # test files
 test_*/
 
@@ -51,4 +57,4 @@ debug
 .DS_Store
 *.pprof
 *.pdf
-pprof.*dist/
+pprof.*

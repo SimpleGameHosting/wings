@@ -36,9 +36,14 @@ type Manager struct {
 // manager.
 func NewManager(ctx context.Context, client remote.Client) (*Manager, error) {
 	m := NewEmptyManager(client)
-	if err := m.init(ctx); err != nil {
+	configuredServers, err := m.init(ctx)
+	if err != nil {
 		return nil, err
 	}
+	if err := m.uploads.PurgeOrphanServers(configuredServers); err != nil {
+		return nil, errors.WrapIf(err, "server: failed to purge orphaned resumable upload state")
+	}
+	m.uploads.StartMaintenance(ctx, m.All)
 	return m, nil
 }
 
@@ -213,10 +218,6 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 	if err != nil {
 		return nil, errors.WithStackIf(err)
 	}
-	if err := m.uploads.CleanupExpired(s); err != nil {
-		return nil, errors.WrapIf(err, "server: failed to clean expired resumable uploads")
-	}
-
 	// Right now we only support a Docker based environment, so I'm going to hard code
 	// this logic in. When we're ready to support other environment we'll need to make
 	// some modifications here, obviously.
@@ -236,6 +237,9 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 		return nil, err
 	} else {
 		s.Environment = env
+		if err := m.uploads.InitializeServer(s); err != nil {
+			return nil, errors.WrapIf(err, "server: failed to initialize resumable upload state")
+		}
 		s.StartEventListeners()
 	}
 
@@ -249,14 +253,18 @@ func (m *Manager) InitServer(data remote.ServerConfigurationResponse) (*Server, 
 
 // initializeFromRemoteSource iterates over a given directory and loads all
 // the servers listed before returning them to the calling function.
-func (m *Manager) init(ctx context.Context) error {
+func (m *Manager) init(ctx context.Context) ([]string, error) {
 	log.Info("fetching list of servers from API")
 	servers, err := m.client.GetServers(ctx, config.Get().RemoteQuery.BootServersPerPage)
 	if err != nil {
 		if !remote.IsRequestError(err) {
-			return errors.WithStackIf(err)
+			return nil, errors.WithStackIf(err)
 		}
-		return errors.WrapIf(err, "manager: failed to retrieve server configurations")
+		return nil, errors.WrapIf(err, "manager: failed to retrieve server configurations")
+	}
+	configuredServers := make([]string, 0, len(servers))
+	for _, data := range servers {
+		configuredServers = append(configuredServers, data.Uuid)
 	}
 
 	start := time.Now()
@@ -294,5 +302,5 @@ func (m *Manager) init(ctx context.Context) error {
 	diff := time.Now().Sub(start)
 	log.WithField("duration", fmt.Sprintf("%s", diff)).Info("finished processing server configurations")
 
-	return nil
+	return configuredServers, nil
 }

@@ -11,6 +11,7 @@ type UploadPayload struct {
 	ServerUuid string `json:"server_uuid"`
 	UserUuid   string `json:"user_uuid"`
 	UniqueId   string `json:"unique_id"`
+	UploadId   string `json:"upload_id,omitempty"`
 }
 
 // Returns the JWT payload.
