@@ -7,6 +7,8 @@ import (
 	"compress/gzip"
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	. "github.com/franela/goblin"
@@ -114,6 +116,96 @@ func zipWithEmptyDir() ([]byte, error) {
 		return nil, err
 	}
 	if _, err := w.Write([]byte("hello")); err != nil {
+		return nil, err
+	}
+
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// Symlinked files are a normal part of game servers (Forge boots through a
+// symlinked unix_args.txt), so extraction must recreate them as links rather
+// than materializing empty regular files at the link path.
+func TestFilesystem_ExtractStreamSymlinks(t *testing.T) {
+	g := Goblin(t)
+	sourceFs, _ := NewFs()
+	targetFs, _ := NewFs()
+
+	g.Describe("ExtractStream", func() {
+		g.AfterEach(func() {
+			_ = sourceFs.TruncateRootDirectory()
+			_ = targetFs.TruncateRootDirectory()
+		})
+
+		g.It("preserves symlinks through an archive round trip", func() {
+			contents := strings.NewReader("-jar forge.jar")
+			g.Assert(sourceFs.Write("libraries/forge/unix_args.txt", contents, contents.Size(), 0o644)).IsNil()
+			g.Assert(os.Symlink("libraries/forge/unix_args.txt", filepath.Join(sourceFs.Path(), "unix_args.txt"))).IsNil()
+			g.Assert(os.Symlink("/etc/hostname", filepath.Join(sourceFs.Path(), "absolute_link"))).IsNil()
+			g.Assert(os.Symlink("missing_target.txt", filepath.Join(sourceFs.Path(), "dangling_link"))).IsNil()
+
+			// Stream the archive with the production archiver into memory and
+			// extract it into a second filesystem exactly like a transfer...
+			var archiveBuffer bytes.Buffer
+			g.Assert((&Archive{Filesystem: sourceFs}).Stream(context.Background(), &archiveBuffer)).IsNil()
+			g.Assert(targetFs.ExtractStreamUnsafe(context.Background(), "/", &archiveBuffer)).IsNil()
+
+			expectSymlink := func(name, expectedTarget string) {
+				info, err := os.Lstat(filepath.Join(targetFs.Path(), name))
+				g.Assert(err).IsNil()
+				g.Assert(info.Mode()&os.ModeSymlink != 0).IsTrue("expected " + name + " to be a symlink")
+				target, err := os.Readlink(filepath.Join(targetFs.Path(), name))
+				g.Assert(err).IsNil()
+				g.Assert(target).Equal(expectedTarget)
+			}
+			expectSymlink("unix_args.txt", "libraries/forge/unix_args.txt")
+			expectSymlink("absolute_link", "/etc/hostname")
+			expectSymlink("dangling_link", "missing_target.txt")
+
+			restored, err := os.ReadFile(filepath.Join(targetFs.Path(), "libraries/forge/unix_args.txt"))
+			g.Assert(err).IsNil()
+			g.Assert(string(restored)).Equal("-jar forge.jar")
+		})
+
+		g.It("preserves symlinks stored in a zip archive", func() {
+			content, err := zipWithSymlink()
+			g.Assert(err).IsNil()
+			g.Assert(targetFs.Write("linked.zip", bytes.NewReader(content), int64(len(content)), 0o644)).IsNil()
+
+			g.Assert(targetFs.DecompressFile(context.Background(), "/", "linked.zip")).IsNil()
+
+			info, err := os.Lstat(filepath.Join(targetFs.Path(), "config_link"))
+			g.Assert(err).IsNil()
+			g.Assert(info.Mode()&os.ModeSymlink != 0).IsTrue("expected config_link to be a symlink")
+			target, err := os.Readlink(filepath.Join(targetFs.Path(), "config_link"))
+			g.Assert(err).IsNil()
+			g.Assert(target).Equal("data/config.txt")
+		})
+	})
+}
+
+// zipWithSymlink builds a zip holding a real file and a symlink pointing at it.
+func zipWithSymlink() ([]byte, error) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+
+	w, err := zw.Create("data/config.txt")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := w.Write([]byte("port=25565")); err != nil {
+		return nil, err
+	}
+
+	lh := &zip.FileHeader{Name: "config_link"}
+	lh.SetMode(os.ModeSymlink | 0o777)
+	lw, err := zw.CreateHeader(lh)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := lw.Write([]byte("data/config.txt")); err != nil {
 		return nil, err
 	}
 

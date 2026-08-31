@@ -164,6 +164,14 @@ Every SGH modification MUST be registered here before its work is considered com
 - Files: `server/backup.go`, `server/backup_restore_test.go`.
 - Conflict risk on rebase: low; localized to the restore path plus a test.
 
+### files: preserve symlinks during extraction and restore
+
+- What: `extractStream` recreates symlink entries through `Filesystem.Symlink` instead of writing them out as files, `RestoreCallback` now carries `archives.FileInfo` so `restoreBackupEntry` sees link targets and restores links, and `Filesystem.Symlink` creates missing parent directories and lchowns the link itself.
+  SFTP symlink creation shares the hardened helper, so links created over SFTP gain server ownership and implicit parent directories.
+- Why: archive creation has preserved symlinks since the fingerprint patch, but every transfer extraction, file-manager decompression, and backup restore materialized them as empty regular files, silently breaking servers that boot through links such as Forge's `unix_args.txt` (upstream issue pterodactyl/panel#5429, upstream PR pterodactyl/wings#286).
+- Files: `server/filesystem/compress.go`, `server/filesystem/compress_test.go`, `server/filesystem/filesystem.go`, `server/backup.go`, `server/backup/backup.go`, `server/backup/backup_local.go`, `server/backup/backup_s3.go`, `server/backup_restore_test.go`.
+- Conflict risk on rebase: medium; the extract callback and the `RestoreCallback` signature are upstream-owned surfaces, and upstream PR #286 touches the same lines with a compatible shape.
+
 ### router: always clean up failed incoming transfers
 
 - What: the deferred transfer completion in `postTransfers` moves into `finalizeIncomingTransfer`, which deletes a failed transfer's extracted files unconditionally, notifies the panel afterwards, and always clears the transferring flag before publishing the real status event.

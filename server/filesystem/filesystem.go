@@ -216,8 +216,24 @@ func (fs *Filesystem) Rename(oldpath, newpath string) error {
 	return fs.unixFS.Rename(oldpath, newpath)
 }
 
+// Symlink creates newpath as a symbolic link to oldpath, creating any missing
+// parent directories and giving the link itself the configured server
+// ownership. The link target is deliberately left untouched: links may point
+// anywhere, and path resolution refuses to traverse links that escape the
+// server root whenever they are later accessed.
 func (fs *Filesystem) Symlink(oldpath, newpath string) error {
-	return fs.unixFS.Symlink(oldpath, newpath)
+	// The link may arrive from an archive before its parent directory does...
+	if err := fs.mkdirAll(filepath.Dir(newpath), 0o755); err != nil {
+		return err
+	}
+
+	if err := fs.unixFS.Symlink(oldpath, newpath); err != nil {
+		return err
+	}
+
+	// chownFile changes ownership without following links, so this applies to
+	// the link itself and never to its target.
+	return fs.chownFile(newpath)
 }
 
 func (fs *Filesystem) chownFile(name string) error {

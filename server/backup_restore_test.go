@@ -37,6 +37,7 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 		int64(len(regionContents)),
 		0o600,
 	))
+	require.NoError(t, os.Symlink("world/region/r.0.0.mca", filepath.Join(sourceFilesystem.Path(), "region_link")))
 
 	// Next, generate the archive with the same writer used for backups and
 	// restore it through the production backup reader and entry handler...
@@ -66,4 +67,13 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 	emptyDirectory, err := os.Stat(filepath.Join(server.Filesystem().Path(), "plugins/empty"))
 	require.NoError(t, err)
 	require.True(t, emptyDirectory.IsDir())
+
+	// Symlinks travel through backups as link entries and must come back as
+	// links; materializing them as empty files breaks servers such as Forge...
+	linkInfo, err := os.Lstat(filepath.Join(server.Filesystem().Path(), "region_link"))
+	require.NoError(t, err)
+	require.NotZero(t, linkInfo.Mode()&os.ModeSymlink, "expected region_link to be restored as a symlink")
+	linkTarget, err := os.Readlink(filepath.Join(server.Filesystem().Path(), "region_link"))
+	require.NoError(t, err)
+	require.Equal(t, "world/region/r.0.0.mca", linkTarget)
 }

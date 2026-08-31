@@ -9,6 +9,7 @@ import (
 	"emperror.dev/errors"
 	"github.com/apex/log"
 	"github.com/docker/docker/client"
+	"github.com/mholt/archives"
 
 	"github.com/pterodactyl/wings/environment"
 	"github.com/pterodactyl/wings/remote"
@@ -156,8 +157,9 @@ func (s *Server) RestoreBackup(b backup.BackupInterface, reader io.ReadCloser) (
 	return errors.WithStackIf(err)
 }
 
-// restoreBackupEntry recreates one archived directory or regular file in the server filesystem.
-func (s *Server) restoreBackupEntry(file string, info fs.FileInfo, reader io.ReadCloser) error {
+// restoreBackupEntry recreates one archived directory, symlink, or regular
+// file in the server filesystem.
+func (s *Server) restoreBackupEntry(file string, info archives.FileInfo, reader io.ReadCloser) error {
 	defer reader.Close()
 	s.Events().Publish(DaemonMessageEvent, "(restoring): "+file)
 
@@ -165,6 +167,12 @@ func (s *Server) restoreBackupEntry(file string, info fs.FileInfo, reader io.Rea
 	// create regular files at those paths and make every nested entry fail...
 	if info.IsDir() {
 		return s.Filesystem().CreateDirectory(file, "/")
+	}
+
+	// Symlink entries carry their target in the archive metadata and must be
+	// recreated as links rather than written out as empty regular files...
+	if info.Mode()&fs.ModeSymlink != 0 {
+		return s.Filesystem().Symlink(info.LinkTarget, file)
 	}
 
 	// TODO: since this will be called a lot, it may be worth adding an optimized
