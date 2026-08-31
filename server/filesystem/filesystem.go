@@ -236,6 +236,19 @@ func (fs *Filesystem) Symlink(oldpath, newpath string) error {
 	return fs.chownFile(newpath)
 }
 
+// OverwriteSymlink creates newpath as a symbolic link to oldpath the way
+// archive extraction and backup restoration need it: an existing file, link,
+// or empty directory at the path is replaced, matching how regular file
+// entries overwrite their destinations. A non-empty directory stays an error
+// so a link entry can never wipe real content.
+func (fs *Filesystem) OverwriteSymlink(oldpath, newpath string) error {
+	if err := fs.unixFS.Remove(newpath); err != nil && !errors.Is(err, ufs.ErrNotExist) {
+		return err
+	}
+
+	return fs.Symlink(oldpath, newpath)
+}
+
 func (fs *Filesystem) chownFile(name string) error {
 	if fs.isTest {
 		return nil

@@ -150,7 +150,12 @@ func TestFilesystem_ExtractStreamSymlinks(t *testing.T) {
 			// extract it into a second filesystem exactly like a transfer...
 			var archiveBuffer bytes.Buffer
 			g.Assert((&Archive{Filesystem: sourceFs}).Stream(context.Background(), &archiveBuffer)).IsNil()
-			g.Assert(targetFs.ExtractStreamUnsafe(context.Background(), "/", &archiveBuffer)).IsNil()
+			archiveBytes := archiveBuffer.Bytes()
+			g.Assert(targetFs.ExtractStreamUnsafe(context.Background(), "/", bytes.NewReader(archiveBytes))).IsNil()
+
+			// Extracting the same archive again must overwrite the links it
+			// created the first time instead of failing with "file exists"...
+			g.Assert(targetFs.ExtractStreamUnsafe(context.Background(), "/", bytes.NewReader(archiveBytes))).IsNil()
 
 			expectSymlink := func(name, expectedTarget string) {
 				info, err := os.Lstat(filepath.Join(targetFs.Path(), name))
@@ -173,6 +178,11 @@ func TestFilesystem_ExtractStreamSymlinks(t *testing.T) {
 			content, err := zipWithSymlink()
 			g.Assert(err).IsNil()
 			g.Assert(targetFs.Write("linked.zip", bytes.NewReader(content), int64(len(content)), 0o644)).IsNil()
+
+			// A stale regular file at the link path must be replaced by the
+			// archived symlink, the same way file entries overwrite files...
+			stale := strings.NewReader("stale regular file")
+			g.Assert(targetFs.Write("config_link", stale, stale.Size(), 0o644)).IsNil()
 
 			g.Assert(targetFs.DecompressFile(context.Background(), "/", "linked.zip")).IsNil()
 

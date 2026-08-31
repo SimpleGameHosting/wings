@@ -70,10 +70,26 @@ func TestBackupRestoreRoundTrip(t *testing.T) {
 
 	// Symlinks travel through backups as link entries and must come back as
 	// links; materializing them as empty files breaks servers such as Forge...
-	linkInfo, err := os.Lstat(filepath.Join(server.Filesystem().Path(), "region_link"))
+	requireRegionSymlink := func() {
+		t.Helper()
+		linkInfo, err := os.Lstat(filepath.Join(server.Filesystem().Path(), "region_link"))
+		require.NoError(t, err)
+		require.NotZero(t, linkInfo.Mode()&os.ModeSymlink, "expected region_link to be restored as a symlink")
+		linkTarget, err := os.Readlink(filepath.Join(server.Filesystem().Path(), "region_link"))
+		require.NoError(t, err)
+		require.Equal(t, "world/region/r.0.0.mca", linkTarget)
+	}
+	requireRegionSymlink()
+
+	// Restoring the same backup again without truncating first is a supported
+	// panel flow and must overwrite the existing link instead of failing...
+	archiveFileAgain, err := os.Open(archivePath)
 	require.NoError(t, err)
-	require.NotZero(t, linkInfo.Mode()&os.ModeSymlink, "expected region_link to be restored as a symlink")
-	linkTarget, err := os.Readlink(filepath.Join(server.Filesystem().Path(), "region_link"))
-	require.NoError(t, err)
-	require.Equal(t, "world/region/r.0.0.mca", linkTarget)
+	defer archiveFileAgain.Close()
+	require.NoError(t, backup.NewS3(nil, testServerUUID, "").Restore(
+		context.Background(),
+		archiveFileAgain,
+		server.restoreBackupEntry,
+	))
+	requireRegionSymlink()
 }

@@ -172,7 +172,7 @@ func (s *Server) restoreBackupEntry(file string, info archives.FileInfo, reader 
 	// Symlink entries carry their target in the archive metadata and must be
 	// recreated as links rather than written out as empty regular files...
 	if info.Mode()&fs.ModeSymlink != 0 {
-		return s.Filesystem().Symlink(info.LinkTarget, file)
+		return s.Filesystem().OverwriteSymlink(info.LinkTarget, file)
 	}
 
 	// TODO: since this will be called a lot, it may be worth adding an optimized

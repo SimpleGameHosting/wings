@@ -311,7 +311,7 @@ func (fs *Filesystem) extractStream(ctx context.Context, opts extractStreamOptio
 		// Recreate symlink entries as symlinks; writing them through Write
 		// would materialize empty regular files at the link path.
 		if f.Mode()&iofs.ModeSymlink != 0 {
-			if err := fs.Symlink(f.LinkTarget, p); err != nil {
+			if err := fs.OverwriteSymlink(f.LinkTarget, p); err != nil {
 				return wrapError(err, opts.FileName)
 			}
 			return nil
