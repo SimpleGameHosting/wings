@@ -23,6 +23,27 @@ type serverTransferRequest struct {
 	Server installer.ServerDetails `json:"server"`
 }
 
+// operationConflictMessage describes, in the same friendly style as the
+// existing "already in progress" guards in this file, which operation kind
+// blocked a request that lost the race to claim a server's shared
+// reservation. Shared by every router handler that claims through
+// TryBeginOperation, since the conflict can be any of the four kinds
+// regardless of which one the caller itself was attempting.
+func operationConflictMessage(current server.Operation) string {
+	switch current {
+	case server.OperationInstall:
+		return "An installation is already in progress for this server."
+	case server.OperationTransfer:
+		return "A transfer is already in progress for this server."
+	case server.OperationRestore:
+		return "A restoration is already in progress for this server."
+	case server.OperationPower:
+		return "A power action is already in progress for this server."
+	default:
+		return "Another exclusive operation is already in progress for this server."
+	}
+}
+
 // postServerTransfer handles the start of a transfer for a server.
 func postServerTransfer(c *gin.Context) {
 	var data serverTransferRequest
@@ -58,9 +79,15 @@ func postServerTransfer(c *gin.Context) {
 
 	// Block the server from starting while we are transferring it. The fast
 	// conflict check above already caught the common case; this atomic claim
-	// closes the remaining race between that check and this line...
+	// closes the remaining race between that check and this line. A conflict
+	// here is routine, not exotic (for example, a power action can hold the
+	// reservation across a slow stop), so it gets the same 409 treatment as
+	// the fast check above rather than the generic 500 CaptureAndAbort would
+	// produce...
 	if err := s.TryBeginOperation(server.OperationTransfer); err != nil {
-		middleware.CaptureAndAbort(c, err)
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": operationConflictMessage(s.CurrentOperation()),
+		})
 		return
 	}
 
@@ -104,6 +131,14 @@ func postServerTransfer(c *gin.Context) {
 		// the server state on the destination node, we just need to make sure
 		// we clean up our statuses for failure.
 
+		// The OperationTransfer reservation claimed above is deliberately
+		// never released on this success path: this is a tombstone, not an
+		// oversight. The server's data has already moved to the destination
+		// node, so refusing any further install, restore, or power
+		// admission against this node's now-stale copy is safer than the
+		// old flag-only behavior. Recovery is either the panel deleting
+		// this server once it confirms the transfer, or a wings restart,
+		// which resets all in-memory reservations.
 		trnsfr.Log().Debug("transfer complete")
 	}()
 

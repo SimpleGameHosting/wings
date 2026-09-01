@@ -68,8 +68,18 @@ func (s *Server) HandlePowerAction(action PowerAction, waitSeconds ...int) error
 
 	cleanup := func() {
 		log.Info("releasing exclusive lock for power action")
-		s.powerLock.Release()
+		// The reservation must be released before the power lock, not after.
+		// Release hands the power lock straight to whichever goroutine is
+		// next in line for it (parked in Acquire or TryAcquire), and that
+		// goroutine can reach claimPowerOperation before this call gets a
+		// chance to run the next line. If the power lock were freed first,
+		// that next goroutine would find the reservation still held, fail
+		// its claim, and release the power lock again in response - which
+		// is safe on the lock itself, but must never touch the reservation,
+		// since by kind alone there is no way to tell "the still-active
+		// first holder's claim" apart from "my own failed one"...
 		s.EndOperation(OperationPower)
+		s.powerLock.Release()
 	}
 
 	var wait int
@@ -109,7 +119,7 @@ func (s *Server) HandlePowerAction(action PowerAction, waitSeconds ...int) error
 		// Claim the shared operation reservation too, so an install, transfer,
 		// or restore that slipped in after the fast pre-check above still
 		// cannot run at the same time as this power action...
-		if err := s.claimPowerOperation(cleanup); err != nil {
+		if err := s.claimPowerOperation(); err != nil {
 			return err
 		}
 		defer cleanup()
@@ -122,7 +132,7 @@ func (s *Server) HandlePowerAction(action PowerAction, waitSeconds ...int) error
 		// executiong the power actions.
 		if err := s.powerLock.Acquire(); err == nil {
 			log.Info("acquired exclusive lock on power actions, processing event...")
-			if err := s.claimPowerOperation(cleanup); err != nil {
+			if err := s.claimPowerOperation(); err != nil {
 				return err
 			}
 			defer cleanup()
@@ -181,12 +191,18 @@ func (s *Server) HandlePowerAction(action PowerAction, waitSeconds ...int) error
 // that has already acquired the power lock. The power lock only serializes
 // power actions against one another, so this closes the remaining window in
 // which an install, transfer, or restore could still start between
-// HandlePowerAction's fast pre-check and this point. On conflict it releases
-// the power lock through cleanup and returns the same typed error the fast
-// pre-check above would have produced for that competing operation.
-func (s *Server) claimPowerOperation(cleanup func()) error {
+// HandlePowerAction's fast pre-check and this point.
+//
+// On conflict this releases only the power lock this call itself just
+// acquired, and nothing else. It must never call cleanup or EndOperation:
+// the reservation it lost the race for belongs to whichever caller actually
+// holds it (another power action, or an install/transfer/restore that won
+// the race), and clearing it here by kind would silently end that other
+// caller's operation out from under it. Returns the same typed error the
+// fast pre-check above would have produced for that competing operation.
+func (s *Server) claimPowerOperation() error {
 	if err := s.TryBeginOperation(OperationPower); err != nil {
-		cleanup()
+		s.powerLock.Release()
 		if s.IsRestoring() {
 			return ErrServerIsRestoring
 		} else if s.IsTransferring() {

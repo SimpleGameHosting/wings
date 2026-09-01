@@ -102,6 +102,19 @@ func (s *Server) EndOperation(kind Operation) {
 	s.setLegacyFlag(kind, false)
 }
 
+// CurrentOperation returns the operation kind currently holding the shared
+// reservation, or the empty string if nothing is claimed. It exists for
+// building a user-facing message after a failed TryBeginOperation call; like
+// the pre-existing IsInstalling()-style flag reads elsewhere in this
+// package, the value can go stale immediately after being read if another
+// caller claims or releases concurrently.
+func (s *Server) CurrentOperation() Operation {
+	s.operation.mu.Lock()
+	defer s.operation.mu.Unlock()
+
+	return s.operation.current
+}
+
 // setLegacyFlag mirrors the reservation into the pre-existing AtomicBool
 // flags that the rest of the daemon (and the panel) observe, so every
 // existing IsInstalling()-style consumer keeps working unchanged. Both

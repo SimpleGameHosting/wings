@@ -120,7 +120,9 @@ func postServerRestoreBackup(c *gin.Context) {
 	}
 
 	if err := s.TryBeginOperation(server.OperationRestore); err != nil {
-		middleware.CaptureAndAbort(c, err)
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": operationConflictMessage(s.CurrentOperation()),
+		})
 		return
 	}
 	hasError := true

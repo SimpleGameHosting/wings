@@ -101,7 +101,9 @@ func postTransfers(c *gin.Context) {
 	}
 
 	if err := i.Server().TryBeginOperation(server.OperationTransfer); err != nil {
-		middleware.CaptureAndAbort(c, err)
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": operationConflictMessage(i.Server().CurrentOperation()),
+		})
 		return
 	}
 	manager.Add(i.Server())
