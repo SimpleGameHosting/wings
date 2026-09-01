@@ -3,6 +3,7 @@ package modpackinstall
 import (
 	"context"
 	"io"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -29,8 +30,9 @@ var errRedirectRefused = errors.New("modpackinstall: download failed: redirects 
 // downloadClient is shared by every Download call. A signed, one-time
 // download URL must never be replayed against a host the panel did not
 // name, so redirects are refused outright rather than followed; the
-// transport bounds the connection phases that the caller's own context
-// does not otherwise cover.
+// transport bounds every connection phase, dial, TLS handshake, response
+// headers, and idle reuse, so a black-holed or slow-DNS host cannot tie up
+// an install slot for anywhere near the caller's whole-job context budget.
 var downloadClient = &http.Client{
 	// The caller's context bounds the overall transfer, so no client-wide
 	// timeout is set here: a large, slow, but healthy transfer is never cut
@@ -40,8 +42,11 @@ var downloadClient = &http.Client{
 		return errRedirectRefused
 	},
 	Transport: &http.Transport{
-		ResponseHeaderTimeout: 30 * time.Second,
+		DialContext: (&net.Dialer{
+			Timeout: 30 * time.Second,
+		}).DialContext,
 		TLSHandshakeTimeout:   15 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
 		IdleConnTimeout:       30 * time.Second,
 	},
 }
