@@ -53,11 +53,16 @@ func postServerTransfer(c *gin.Context) {
 		}
 
 		s.Events().Publish(server.TransferStatusEvent, "failure")
-		s.SetTransferring(false)
+		s.EndOperation(server.OperationTransfer)
 	}
 
-	// Block the server from starting while we are transferring it.
-	s.SetTransferring(true)
+	// Block the server from starting while we are transferring it. The fast
+	// conflict check above already caught the common case; this atomic claim
+	// closes the remaining race between that check and this line...
+	if err := s.TryBeginOperation(server.OperationTransfer); err != nil {
+		middleware.CaptureAndAbort(c, err)
+		return
+	}
 
 	// Ensure the server is offline. Sometimes a "No such container" error gets through
 	// which means the server is already stopped. We can ignore that.
@@ -67,7 +72,7 @@ func postServerTransfer(c *gin.Context) {
 			time.Second*15,
 			false,
 		); err != nil && !strings.Contains(strings.ToLower(err.Error()), "no such container") {
-			s.SetTransferring(false)
+			s.EndOperation(server.OperationTransfer)
 			middleware.CaptureAndAbort(c, errors.Wrap(err, "failed to stop server for transfer"))
 			return
 		}

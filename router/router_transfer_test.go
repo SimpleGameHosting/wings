@@ -94,7 +94,9 @@ func newTransferFixture(t *testing.T, client *transferTestRemoteClient) (*wserve
 	}
 	t.Cleanup(s.CtxCancel)
 	manager.Add(s)
-	s.SetTransferring(true)
+	if err := s.TryBeginOperation(wserver.OperationTransfer); err != nil {
+		t.Fatal(err)
+	}
 
 	leftoverContents := "partial data"
 	if err := s.Filesystem().Write("leftover.txt", strings.NewReader(leftoverContents), int64(len(leftoverContents)), 0o644); err != nil {
@@ -174,7 +176,7 @@ func TestPostTransfersRejectsServerAlreadyOnNode(t *testing.T) {
 	client := &transferTestRemoteClient{}
 	manager, trnsfr := newTransferFixture(t, client)
 	transfer.Incoming().Remove(trnsfr)
-	trnsfr.Server.SetTransferring(false)
+	trnsfr.Server.EndOperation(wserver.OperationTransfer)
 	dataPath := trnsfr.Server.Filesystem().Path()
 	c, recorder := newTransferRequestContext(t, manager, signTransferToken(t, trnsfr.Server.ID()))
 

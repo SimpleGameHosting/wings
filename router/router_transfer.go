@@ -100,7 +100,10 @@ func postTransfers(c *gin.Context) {
 		return
 	}
 
-	i.Server().SetTransferring(true)
+	if err := i.Server().TryBeginOperation(server.OperationTransfer); err != nil {
+		middleware.CaptureAndAbort(c, err)
+		return
+	}
 	manager.Add(i.Server())
 
 	// We add the transfer to the list of transfers once we have a server instance to use.
@@ -274,7 +277,7 @@ func finalizeIncomingTransfer(manager *server.Manager, trnsfr *transfer.Transfer
 		trnsfr.Log().WithField("status", status).WithError(err).Error("failed to set transfer status on panel")
 	}
 
-	trnsfr.Server.SetTransferring(false)
+	trnsfr.Server.EndOperation(server.OperationTransfer)
 	trnsfr.Server.Events().Publish(server.TransferStatusEvent, status)
 }
 

@@ -115,6 +115,18 @@ func TestOperationReservation(t *testing.T) {
 		s.EndOperation(OperationInstall)
 	})
 
+	t.Run("power claim blocks a concurrent install claim and vice versa", func(t *testing.T) {
+		s := newOperationTestServer(t)
+
+		require.NoError(t, s.TryBeginOperation(OperationPower))
+		assert.Error(t, s.TryBeginOperation(OperationInstall))
+
+		s.EndOperation(OperationPower)
+
+		require.NoError(t, s.TryBeginOperation(OperationInstall))
+		s.EndOperation(OperationInstall)
+	})
+
 	t.Run("EndOperation with an unknown kind is a no-op", func(t *testing.T) {
 		s := newOperationTestServer(t)
 

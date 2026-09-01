@@ -69,6 +69,7 @@ func (s *Server) HandlePowerAction(action PowerAction, waitSeconds ...int) error
 	cleanup := func() {
 		log.Info("releasing exclusive lock for power action")
 		s.powerLock.Release()
+		s.EndOperation(OperationPower)
 	}
 
 	var wait int
@@ -104,6 +105,13 @@ func (s *Server) HandlePowerAction(action PowerAction, waitSeconds ...int) error
 		}
 
 		log.Info("acquired exclusive lock on power actions, processing event...")
+		// The power lock only serializes power actions against each other.
+		// Claim the shared operation reservation too, so an install, transfer,
+		// or restore that slipped in after the fast pre-check above still
+		// cannot run at the same time as this power action...
+		if err := s.claimPowerOperation(cleanup); err != nil {
+			return err
+		}
 		defer cleanup()
 	} else {
 		// Still try to acquire the lock if terminating, and it is available, just so that
@@ -114,6 +122,9 @@ func (s *Server) HandlePowerAction(action PowerAction, waitSeconds ...int) error
 		// executiong the power actions.
 		if err := s.powerLock.Acquire(); err == nil {
 			log.Info("acquired exclusive lock on power actions, processing event...")
+			if err := s.claimPowerOperation(cleanup); err != nil {
+				return err
+			}
 			defer cleanup()
 		} else {
 			log.Warn("failed to acquire exclusive lock, ignoring failure for termination event")
@@ -164,6 +175,28 @@ func (s *Server) HandlePowerAction(action PowerAction, waitSeconds ...int) error
 	}
 
 	return errors.New("attempting to handle unknown power action")
+}
+
+// claimPowerOperation reserves the shared operation lock for a power action
+// that has already acquired the power lock. The power lock only serializes
+// power actions against one another, so this closes the remaining window in
+// which an install, transfer, or restore could still start between
+// HandlePowerAction's fast pre-check and this point. On conflict it releases
+// the power lock through cleanup and returns the same typed error the fast
+// pre-check above would have produced for that competing operation.
+func (s *Server) claimPowerOperation(cleanup func()) error {
+	if err := s.TryBeginOperation(OperationPower); err != nil {
+		cleanup()
+		if s.IsRestoring() {
+			return ErrServerIsRestoring
+		} else if s.IsTransferring() {
+			return ErrServerIsTransferring
+		} else if s.IsInstalling() {
+			return ErrServerIsInstalling
+		}
+		return err
+	}
+	return nil
 }
 
 // Execute a few functions before actually calling the environment start commands. This ensures

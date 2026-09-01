@@ -119,14 +119,17 @@ func postServerRestoreBackup(c *gin.Context) {
 		}
 	}
 
-	s.SetRestoring(true)
+	if err := s.TryBeginOperation(server.OperationRestore); err != nil {
+		middleware.CaptureAndAbort(c, err)
+		return
+	}
 	hasError := true
 	defer func() {
 		if !hasError {
 			return
 		}
 
-		s.SetRestoring(false)
+		s.EndOperation(server.OperationRestore)
 	}()
 
 	logger.Info("processing server backup restore request")
@@ -154,7 +157,7 @@ func postServerRestoreBackup(c *gin.Context) {
 			s.Events().Publish(server.DaemonMessageEvent, "Completed server restoration from local backup.")
 			s.Events().Publish(server.BackupRestoreCompletedEvent, "")
 			logger.Info("completed server restoration from local backup")
-			s.SetRestoring(false)
+			s.EndOperation(server.OperationRestore)
 		}(s, b, logger)
 		hasError = false
 		c.Status(http.StatusAccepted)
@@ -208,7 +211,7 @@ func postServerRestoreBackup(c *gin.Context) {
 		s.Events().Publish(server.DaemonMessageEvent, "Completed server restoration from S3 backup.")
 		s.Events().Publish(server.BackupRestoreCompletedEvent, "")
 		logger.Info("completed server restoration from S3 backup")
-		s.SetRestoring(false)
+		s.EndOperation(server.OperationRestore)
 	}(s, backupUuid, logger)
 
 	hasError = false

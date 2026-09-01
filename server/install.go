@@ -195,17 +195,16 @@ func (ip *InstallationProcess) RemoveContainer() error {
 // are stored in an installation log in the server's configuration directory.
 func (ip *InstallationProcess) Run() error {
 	ip.Server.Log().Debug("acquiring installation process lock")
-	if !ip.Server.installing.SwapIf(true) {
+	if err := ip.Server.TryBeginOperation(OperationInstall); err != nil {
 		return errors.New("install: cannot obtain installation lock")
 	}
-	ip.Server.Sftp().CancelAll()
 
 	// We now have an exclusive lock on this installation process. Ensure that whenever this
 	// process is finished that the semaphore is released so that other processes and be executed
 	// without encountering a wait timeout.
 	defer func() {
 		ip.Server.Log().Debug("releasing installation process lock")
-		ip.Server.installing.Store(false)
+		ip.Server.EndOperation(OperationInstall)
 	}()
 
 	if err := ip.BeforeExecute(); err != nil {
