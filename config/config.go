@@ -287,6 +287,8 @@ type SystemConfiguration struct {
 
 	Transfers Transfers `yaml:"transfers"`
 
+	ModpackInstall ModpackInstall `json:"modpack_install" yaml:"modpack_install"`
+
 	OpenatMode string `default:"auto" yaml:"openat_mode"`
 }
 
@@ -338,6 +340,14 @@ type Transfers struct {
 	//
 	// Defaults to 0 (unlimited)
 	DownloadLimit int `default:"0" yaml:"download_limit"`
+}
+
+// ModpackInstall bounds the native modpack and version install jobs added by
+// the SGH fork: how many may run at once per node, and how long a single
+// job may take before its context is cancelled.
+type ModpackInstall struct {
+	MaxConcurrent  int `default:"3" json:"max_concurrent" yaml:"max_concurrent"`
+	TimeoutMinutes int `default:"30" json:"timeout_minutes" yaml:"timeout_minutes"`
 }
 
 type ConsoleThrottles struct {
