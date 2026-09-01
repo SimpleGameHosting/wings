@@ -260,3 +260,13 @@ type PlayerEventRequest struct {
 type PlayerEventBatch struct {
 	Events []PlayerEventRequest `json:"events"`
 }
+
+// ModpackInstallResultRequest reports the terminal outcome of one native
+// modpack/version install attempt back to the panel. The panel fences on
+// InstallID, so a stale or duplicate report is harmless.
+type ModpackInstallResultRequest struct {
+	InstallID  string `json:"install_id"`
+	Successful bool   `json:"successful"`
+	Error      string `json:"error"`
+	DurationMs int64  `json:"duration_ms"`
+}

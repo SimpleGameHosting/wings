@@ -19,6 +19,10 @@ const (
 	ProcessStopSignal     = "signal"
 	ProcessStopNativeStop = "stop"
 	playerEventTimeout    = 5 * time.Second
+
+	// modpackInstallResultTimeout bounds the terminal callback for a native
+	// install; the job is already finished, so this must never hang the node.
+	modpackInstallResultTimeout = 10 * time.Second
 )
 
 // GetServers returns all the servers that are present on the Panel making
@@ -123,6 +127,22 @@ func (c *client) SendPlayerEvents(ctx context.Context, uuid string, events []Pla
 	defer cancel()
 
 	resp, err := c.postWithRetries(ctx, fmt.Sprintf("/servers/%s/player-events", uuid), PlayerEventBatch{Events: events}, 1)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+
+	return nil
+}
+
+// SendModpackInstallResult reports a finished native install attempt. It is
+// called on a fresh context (never the job context, which may already be
+// expired when reporting a timeout) and retries once like player events.
+func (c *client) SendModpackInstallResult(ctx context.Context, uuid string, data ModpackInstallResultRequest) error {
+	ctx, cancel := context.WithTimeout(ctx, modpackInstallResultTimeout)
+	defer cancel()
+
+	resp, err := c.postWithRetries(ctx, fmt.Sprintf("/servers/%s/modpack-install-result", uuid), data, 1)
 	if err != nil {
 		return err
 	}

@@ -36,6 +36,7 @@ type Client interface {
 	ValidateSftpCredentials(ctx context.Context, request SftpAuthRequest) (SftpAuthResponse, error)
 	SendActivityLogs(ctx context.Context, activity []models.Activity) error
 	SendPlayerEvents(ctx context.Context, uuid string, events []PlayerEventRequest) error
+	SendModpackInstallResult(ctx context.Context, uuid string, data ModpackInstallResultRequest) error
 	SetCredentials(id, token string)
 }
 

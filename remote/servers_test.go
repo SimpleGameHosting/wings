@@ -124,3 +124,53 @@ func TestSendPlayerEventsBoundsDeliveryTime(t *testing.T) {
 	assert.Positive(t, remaining)
 	assert.LessOrEqual(t, remaining, playerEventTimeout)
 }
+
+func TestSendModpackInstallResult(t *testing.T) {
+	c, _ := createTestClient(func(rw http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/servers/abc-uuid/modpack-install-result", r.URL.Path)
+
+		b, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+
+		var data map[string]interface{}
+		assert.NoError(t, json.Unmarshal(b, &data))
+		assert.Equal(t, "11111111-2222-3333-4444-555555555555", data["install_id"])
+		assert.Equal(t, true, data["successful"])
+		assert.EqualValues(t, 4200, data["duration_ms"])
+
+		rw.WriteHeader(http.StatusNoContent)
+	})
+
+	err := c.SendModpackInstallResult(context.Background(), "abc-uuid", ModpackInstallResultRequest{
+		InstallID:  "11111111-2222-3333-4444-555555555555",
+		Successful: true,
+		DurationMs: 4200,
+	})
+	assert.NoError(t, err)
+}
+
+// TestSendModpackInstallResultRetriesOnFailure ensures a single transient
+// panel error while reporting a finished install is absorbed by the one
+// allowed retry instead of being dropped outright.
+func TestSendModpackInstallResultRetriesOnFailure(t *testing.T) {
+	attempts := 0
+	c, server := createTestClient(func(rw http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			rw.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		rw.WriteHeader(http.StatusNoContent)
+	})
+	defer server.Close()
+
+	err := c.SendModpackInstallResult(context.Background(), "abc-uuid", ModpackInstallResultRequest{
+		InstallID:  "11111111-2222-3333-4444-555555555555",
+		Successful: false,
+		Error:      "download failed",
+	})
+
+	assert.NoError(t, err)
+	assert.Equal(t, 2, attempts)
+}

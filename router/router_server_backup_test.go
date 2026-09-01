@@ -98,6 +98,12 @@ func (c backupTestRemoteClient) SendPlayerEvents(context.Context, string, []remo
 	return nil
 }
 
+// SendModpackInstallResult satisfies the SGH remote client contract for
+// router tests that do not exercise native modpack install reporting.
+func (c backupTestRemoteClient) SendModpackInstallResult(context.Context, string, remote.ModpackInstallResultRequest) error {
+	return nil
+}
+
 func (c backupTestRemoteClient) SetCredentials(id, token string) {
 	if c.credentials != nil {
 		c.credentials <- [2]string{id, token}
