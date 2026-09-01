@@ -7,7 +7,11 @@ import (
 )
 
 // Operation names one of the mutually exclusive long-running things a server
-// can be doing at once, such as installing, transferring, or restoring.
+// can be doing at once, such as installing, transferring, or restoring. The
+// empty string is never a valid Operation: operationLock represents "nothing
+// is claimed" as that same empty string internally, so TryBeginOperation and
+// EndOperation both reject it, along with any other value outside the four
+// constants below, via IsValid.
 type Operation string
 
 const (
@@ -17,10 +21,25 @@ const (
 	OperationPower    Operation = "power"
 )
 
+// IsValid reports whether kind is one of the four known operation kinds.
+func (o Operation) IsValid() bool {
+	return o == OperationInstall ||
+		o == OperationTransfer ||
+		o == OperationRestore ||
+		o == OperationPower
+}
+
 // ErrOperationInProgress indicates a server already has an exclusive
 // operation in progress. TryBeginOperation wraps it with the name of the
 // operation currently holding the reservation.
 var ErrOperationInProgress = errors.Sentinel("server: another exclusive operation is in progress")
+
+// ErrUnknownOperation indicates TryBeginOperation was called with an
+// Operation value that is not one of the four known kinds, including the
+// empty-string zero value. Rejecting it is what stops that zero value from
+// being mistaken for "nothing claimed" and silently defeating mutual
+// exclusion.
+var ErrUnknownOperation = errors.Sentinel("server: unknown operation kind")
 
 // operationLock serializes claims across the mutually exclusive operation
 // kinds a server can run. The legacy AtomicBool flags (installing,
@@ -35,9 +54,21 @@ type operationLock struct {
 // TryBeginOperation atomically claims exclusive ownership of the server for
 // the given operation kind, setting the matching legacy flag while the lock
 // is held so no other kind can slip in between the check and the set. It
-// returns ErrOperationInProgress, naming the current holder, when another
-// operation already owns the reservation.
+// returns ErrUnknownOperation if kind is not one of the four known kinds
+// (this also rejects the empty-string zero value, which would otherwise be
+// mistaken for "nothing claimed"), and ErrOperationInProgress, naming the
+// current holder, when another operation already owns the reservation.
+//
+// TryBeginOperation must never be called while the caller already holds the
+// Server's own mutex (s.Lock/s.RLock). Claiming install, transfer, or
+// restore mirrors the legacy flag through SetInstalling, SetTransferring, or
+// SetRestoring, which calls Sftp() and so acquires that same mutex; calling
+// in from inside it would deadlock permanently.
 func (s *Server) TryBeginOperation(kind Operation) error {
+	if !kind.IsValid() {
+		return errors.Wrapf(ErrUnknownOperation, "kind: %q", kind)
+	}
+
 	s.operation.mu.Lock()
 	defer s.operation.mu.Unlock()
 
@@ -52,10 +83,14 @@ func (s *Server) TryBeginOperation(kind Operation) error {
 }
 
 // EndOperation releases the reservation held for kind, clearing its matching
-// legacy flag. Releasing a kind that does not currently hold the reservation
-// is a no-op, so a stale or duplicate release can never clear another
-// operation's claim.
+// legacy flag. Releasing an unknown kind (including the empty string), or a
+// kind that does not currently hold the reservation, is a no-op, so a stale,
+// duplicate, or malformed release can never clear another operation's claim.
 func (s *Server) EndOperation(kind Operation) {
+	if !kind.IsValid() {
+		return
+	}
+
 	s.operation.mu.Lock()
 	defer s.operation.mu.Unlock()
 
@@ -69,7 +104,12 @@ func (s *Server) EndOperation(kind Operation) {
 
 // setLegacyFlag mirrors the reservation into the pre-existing AtomicBool
 // flags that the rest of the daemon (and the panel) observe, so every
-// existing IsInstalling()-style consumer keeps working unchanged.
+// existing IsInstalling()-style consumer keeps working unchanged. Both
+// callers above validate kind with IsValid() before reaching here, so the
+// default case is unreachable in practice; it stays a documented no-op
+// rather than a panic so that a future Operation constant added without a
+// matching case here fails safe, by mirroring nothing, instead of crashing
+// the daemon.
 func (s *Server) setLegacyFlag(kind Operation, state bool) {
 	switch kind {
 	case OperationInstall:
@@ -81,5 +121,7 @@ func (s *Server) setLegacyFlag(kind Operation, state bool) {
 	case OperationPower:
 		// Power has no legacy AtomicBool flag; the pre-existing power lock
 		// is already its own visible state and is left untouched here.
+	default:
+		// Unreachable: both call sites guard with kind.IsValid() first.
 	}
 }
