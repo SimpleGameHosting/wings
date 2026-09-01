@@ -67,6 +67,11 @@ type Server struct {
 	transferring *system.AtomicBool
 	restoring    *system.AtomicBool
 
+	// Serializes claims to the mutually exclusive operations above (and the
+	// power action) so TryBeginOperation can check for an existing claim and
+	// record a new one as a single atomic step instead of two racing ones.
+	operation operationLock
+
 	// The console throttler instance used to control outputs.
 	throttler    *ConsoleThrottle
 	throttleOnce sync.Once
