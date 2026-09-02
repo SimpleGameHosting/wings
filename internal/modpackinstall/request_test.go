@@ -27,6 +27,7 @@ func TestRequestValidate(t *testing.T) {
 		{"modpack with version type", func(r *Request) { r.VersionType = "paper" }, true},
 		{"bad url scheme", func(r *Request) { r.DownloadURL = "ftp://x/y" }, true},
 		{"explicit non-jar format rejected", func(r *Request) { r.ArchiveFormat = "tar.gz" }, true},
+		{"modpack with jar format rejected", func(r *Request) { r.ArchiveFormat = "jar" }, true},
 	}
 	for _, tc := range cases {
 		r := valid()

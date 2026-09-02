@@ -5,10 +5,9 @@
 package modpackinstall
 
 import (
-	"emperror.dev/errors"
 	"net/url"
-	"strings"
 
+	"emperror.dev/errors"
 	"github.com/google/uuid"
 )
 
@@ -82,16 +81,18 @@ func (r *Request) Validate() error {
 		return errors.Errorf("modpackinstall: archive_format may only be omitted or %q; archives are sniffed", FormatJar)
 	}
 
+	// A modpack is always a packaged tree, never a single runtime jar, so
+	// the jar format is refused here rather than quietly ignored...
+	if r.Kind == KindModpack && r.ArchiveFormat == FormatJar {
+		return errors.Errorf("modpackinstall: archive_format %q is only valid for kind=%q", FormatJar, KindVersion)
+	}
+
 	if r.Kind == KindVersion {
 		if _, ok := knownVersionTypes[r.VersionType]; !ok {
 			return errors.Errorf("modpackinstall: unknown version_type %q", r.VersionType)
 		}
 	} else if r.VersionType != "" {
 		return errors.New("modpackinstall: version_type is only valid for kind=version")
-	}
-
-	if strings.Contains(r.InstallID, "..") {
-		return errors.New("modpackinstall: invalid install_id")
 	}
 
 	return nil
