@@ -49,6 +49,15 @@ var ErrUnknownOperation = errors.Sentinel("server: unknown operation kind")
 type operationLock struct {
 	mu      sync.Mutex
 	current Operation
+
+	// activeInstallID and lastFinishedInstallID track the identity of the
+	// native modpack/version installs this server has admitted, so a
+	// retried request can be told apart from a genuinely new one. They
+	// live under this same mutex, rather than one of their own, so the
+	// identity and the reservation are always claimed and released as a
+	// single indivisible step.
+	activeInstallID       string
+	lastFinishedInstallID string
 }
 
 // TryBeginOperation atomically claims exclusive ownership of the server for
@@ -94,6 +103,13 @@ func (s *Server) EndOperation(kind Operation) {
 	s.operation.mu.Lock()
 	defer s.operation.mu.Unlock()
 
+	s.endOperationLocked(kind)
+}
+
+// endOperationLocked is EndOperation's body, split out so a caller that
+// already holds the reservation mutex can release the claim and its own
+// bookkeeping in one indivisible step. Callers must hold s.operation.mu.
+func (s *Server) endOperationLocked(kind Operation) {
 	if s.operation.current != kind {
 		return
 	}

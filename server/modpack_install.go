@@ -55,20 +55,57 @@ func (m *Manager) TryReserveModpackInstallSlot() (func(), bool) {
 
 // ActiveModpackInstallID reports the install_id of the native install
 // currently running against this server, or the empty string when none is
-// running. The router reads this to tell a retried request apart from a
-// genuinely new one.
+// running.
 func (s *Server) ActiveModpackInstallID() string {
-	s.modpackInstall.mu.Lock()
-	defer s.modpackInstall.mu.Unlock()
-	return s.modpackInstall.activeID
+	s.operation.mu.Lock()
+	defer s.operation.mu.Unlock()
+	return s.operation.activeInstallID
 }
 
-// setActiveModpackInstallID records or clears the install_id of the native
-// install currently running against this server.
-func (s *Server) setActiveModpackInstallID(id string) {
-	s.modpackInstall.mu.Lock()
-	defer s.modpackInstall.mu.Unlock()
-	s.modpackInstall.activeID = id
+// SetActiveModpackInstallID records the install_id of the attempt this
+// server has just admitted. The install router calls it after it has both
+// claimed the install operation and reserved a node slot, and before it
+// spawns the job, so the identity is already visible to a concurrent
+// retry by the time the 202 is written rather than only once the job
+// goroutine happens to be scheduled.
+func (s *Server) SetActiveModpackInstallID(id string) {
+	s.operation.mu.Lock()
+	defer s.operation.mu.Unlock()
+	s.operation.activeInstallID = id
+}
+
+// IsRecentModpackInstallID reports whether id names either the install
+// currently running against this server or the one that finished most
+// recently. Both answer the panel's question the same way: this attempt
+// has already been admitted once, so a repeat of it is a retry of a lost
+// 202 and must never start a second job. Remembering the finished id
+// matters because a fast install can be over before the panel's retry
+// arrives, and re-running it would wipe a server the user has since
+// started.
+func (s *Server) IsRecentModpackInstallID(id string) bool {
+	if id == "" {
+		return false
+	}
+
+	s.operation.mu.Lock()
+	defer s.operation.mu.Unlock()
+
+	return id == s.operation.activeInstallID || id == s.operation.lastFinishedInstallID
+}
+
+// releaseModpackInstallClaim retires a finished attempt: it remembers the
+// id as the last one to finish, clears the active id, and releases the
+// install reservation, all inside one hold of the reservation mutex. Doing
+// the three together is what stops an observer from ever seeing a free
+// reservation while an id is still active, or an active reservation whose
+// id has already been cleared.
+func (s *Server) releaseModpackInstallClaim(installID string) {
+	s.operation.mu.Lock()
+	defer s.operation.mu.Unlock()
+
+	s.operation.lastFinishedInstallID = installID
+	s.operation.activeInstallID = ""
+	s.endOperationLocked(OperationInstall)
 }
 
 // RunModpackInstall executes one native modpack/version install attempt
@@ -81,17 +118,13 @@ func (s *Server) setActiveModpackInstallID(id string) {
 // the result back to the panel exactly once.
 func (s *Server) RunModpackInstall(req modpackinstall.Request, release func()) {
 	start := time.Now()
-	s.setActiveModpackInstallID(req.InstallID)
-
-	timeout := time.Duration(config.Get().System.ModpackInstall.TimeoutMinutes) * time.Minute
-	ctx, cancel := context.WithTimeout(s.Context(), timeout)
-	defer cancel()
-
 	var installErr error
-	// This deferred func is the single exit point for the attempt: it runs
-	// whether the pipeline below returns a plain error, returns nil, or
-	// panics, so the finisher underneath it is guaranteed to run exactly
-	// once regardless of how the attempt ends...
+
+	// This deferred func is registered before anything else can fail so it
+	// is the single exit point for the attempt: it runs whether the
+	// pipeline below returns a plain error, returns nil, or panics, so the
+	// finisher underneath it is guaranteed to run exactly once regardless
+	// of how the attempt ends...
 	defer func() {
 		if r := recover(); r != nil {
 			installErr = errors.New("modpackinstall: unexpected internal error")
@@ -99,6 +132,10 @@ func (s *Server) RunModpackInstall(req modpackinstall.Request, release func()) {
 		}
 		s.finishModpackInstall(req, installErr, start, release)
 	}()
+
+	timeout := time.Duration(config.Get().System.ModpackInstall.TimeoutMinutes) * time.Minute
+	ctx, cancel := context.WithTimeout(s.Context(), timeout)
+	defer cancel()
 
 	installErr = s.runModpackInstallPipeline(ctx, req)
 }
@@ -164,17 +201,16 @@ func (s *Server) runModpackInstallPipeline(ctx context.Context, req modpackinsta
 
 // finishModpackInstall is the single exit path for a native install attempt,
 // reached exactly once whether it succeeded, failed, or panicked. The order
-// below is deliberate: exclusivity is released first (clearing the active
-// id, ending the operation reservation, and freeing the node slot) so a
-// retried request is never blocked by bookkeeping that has already served
-// its purpose, then the panel is told the outcome on a fresh context so a
-// cancelled or expired job context can never suppress the callback, and
-// only then is the terminal event published, since panel and websocket
-// consumers should learn of an outcome no earlier than the node itself
-// considers the attempt finished.
+// below is deliberate: exclusivity is released first (retiring the install
+// identity together with the operation reservation, then freeing the node
+// slot) so a retried request is never blocked by bookkeeping that has
+// already served its purpose, then the panel is told the outcome on a
+// fresh context so a cancelled or expired job context can never suppress
+// the callback, and only then is the terminal event published, since panel
+// and websocket consumers should learn of an outcome no earlier than the
+// node itself considers the attempt finished.
 func (s *Server) finishModpackInstall(req modpackinstall.Request, installErr error, start time.Time, release func()) {
-	s.setActiveModpackInstallID("")
-	s.EndOperation(OperationInstall)
+	s.releaseModpackInstallClaim(req.InstallID)
 	release()
 
 	result := remote.ModpackInstallResultRequest{

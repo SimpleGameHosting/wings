@@ -186,6 +186,37 @@ func waitForActiveModpackInstallID(t *testing.T, s *wserver.Server, want string,
 	}
 }
 
+// reserveAllModpackInstallSlots takes every one of the node's install
+// slots, retrying until they are all free or timeout elapses, and returns
+// their release funcs. Polling is required because a finished job releases
+// its slot a moment after it clears its active install id.
+func reserveAllModpackInstallSlots(t *testing.T, fixture *modpackInstallFixture, count int, timeout time.Duration) []func() {
+	t.Helper()
+
+	deadline := time.Now().Add(timeout)
+	for {
+		var releases []func()
+		for i := 0; i < count; i++ {
+			release, ok := fixture.manager.TryReserveModpackInstallSlot()
+			if !ok {
+				break
+			}
+			releases = append(releases, release)
+		}
+		if len(releases) == count {
+			return releases
+		}
+
+		for _, release := range releases {
+			release()
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for all %d install slots to become free", count)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 // decodeJSONBody unmarshals a recorder's body into v, failing the test on
 // any decode error so every case below can assert on typed fields instead
 // of raw strings.
@@ -255,6 +286,10 @@ func TestModpackInstallAcceptsValidRequestAndTracksLifecycle(t *testing.T) {
 // TestModpackInstallRepeatOfActiveInstallReturns202WithoutStartingAnother
 // covers case 3: repeating the exact install_id that is already running
 // must be answered with the same 202 and must not consume a second slot.
+// The repeat fires with no poll or sleep after the first 202, which is the
+// shape a panel retry of a lost response actually takes: the identity has
+// to be observable the instant the first response is written, not once the
+// job goroutine happens to get scheduled.
 func TestModpackInstallRepeatOfActiveInstallReturns202WithoutStartingAnother(t *testing.T) {
 	fixture := newModpackInstallFixture(t, 2)
 	s := fixture.newServer(t, testModpackInstallServerID)
@@ -268,11 +303,9 @@ func TestModpackInstallRepeatOfActiveInstallReturns202WithoutStartingAnother(t *
 	if firstRecorder.Code != http.StatusAccepted {
 		t.Fatalf("expected the first attempt to return 202, got %d body %s", firstRecorder.Code, firstRecorder.Body.String())
 	}
-
-	// The job goroutine records its own id as its first statement, so wait
-	// for that to happen before firing the duplicate; otherwise the repeat
-	// can race the goroutine and see no active id yet...
-	waitForActiveModpackInstallID(t, s, installID, 2*time.Second)
+	if id := s.ActiveModpackInstallID(); id != installID {
+		t.Fatalf("expected the install id to be observable the instant the 202 is written, got %q", id)
+	}
 
 	second, secondRecorder := fixture.newContext(t, s, body)
 	postServerModpackInstall(second)
@@ -296,6 +329,58 @@ func TestModpackInstallRepeatOfActiveInstallReturns202WithoutStartingAnother(t *
 	release()
 
 	waitForActiveModpackInstallID(t, s, "", 5*time.Second)
+}
+
+// TestModpackInstallRepeatOfFinishedInstallReturns202WithoutStartingAnother
+// pins Ruling 17: an install_id whose job has already run to completion is
+// still remembered, so the panel's single retry of a lost 202 never starts
+// a second full install against a server the user may have started again.
+// Every node slot is deliberately held while the repeat is fired, so a 202
+// can only mean the request short-circuited instead of spawning a job.
+func TestModpackInstallRepeatOfFinishedInstallReturns202WithoutStartingAnother(t *testing.T) {
+	const maxConcurrent = 2
+	fixture := newModpackInstallFixture(t, maxConcurrent)
+	s := fixture.newServer(t, testModpackInstallServerID)
+	archive := newModpackArchiveServer(t)
+
+	installID := uuid.NewString()
+	body := validModpackInstallBody(installID, archive.URL)
+
+	first, firstRecorder := fixture.newContext(t, s, body)
+	postServerModpackInstall(first)
+	if firstRecorder.Code != http.StatusAccepted {
+		t.Fatalf("expected the first attempt to return 202, got %d body %s", firstRecorder.Code, firstRecorder.Body.String())
+	}
+	waitForActiveModpackInstallID(t, s, "", 5*time.Second)
+
+	// Reserving every slot proves the finished job gave its own back, and
+	// leaves the node with nothing to hand a second job...
+	releases := reserveAllModpackInstallSlots(t, fixture, maxConcurrent, 5*time.Second)
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+	}()
+
+	second, secondRecorder := fixture.newContext(t, s, body)
+	postServerModpackInstall(second)
+	if secondRecorder.Code != http.StatusAccepted {
+		t.Fatalf("expected a repeat of the last finished install id to return 202, got %d body %s", secondRecorder.Code, secondRecorder.Body.String())
+	}
+	var result struct {
+		InstallID string `json:"install_id"`
+	}
+	decodeJSONBody(t, secondRecorder, &result)
+	if result.InstallID != installID {
+		t.Fatalf("expected the repeat response install_id %q, got %q", installID, result.InstallID)
+	}
+
+	if id := s.ActiveModpackInstallID(); id != "" {
+		t.Fatalf("expected no second job to start for a finished install id, got active id %q", id)
+	}
+	if current := s.CurrentOperation(); current != "" {
+		t.Fatalf("expected the repeat to claim no operation reservation, got %q", current)
+	}
 }
 
 // TestModpackInstallDifferentInstallIDWhileActiveReturns409 covers case 4:

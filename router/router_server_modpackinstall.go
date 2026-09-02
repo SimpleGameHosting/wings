@@ -17,11 +17,13 @@ import (
 // written, so a duplicate, a racing request, or an over-quota attempt is
 // always answered honestly instead of failing invisibly inside a background
 // goroutine later on. The claim order below is spec-mandated: an exact
-// repeat of the attempt already running is answered first, so a caller
-// retrying a lost 202 is never told the server is busy; only after that is
-// the payload validated, the server's exclusive operation claimed, and
-// finally the node-wide install slot reserved, unwinding the operation
-// claim again if that last step fails.
+// repeat of an attempt this server has already admitted, whether it is
+// still running or was the last one to finish, is answered first, so a
+// caller retrying a lost 202 is never told the server is busy and never
+// starts the same install twice; only after that is the payload validated,
+// the server's exclusive operation claimed, and finally the node-wide
+// install slot reserved, unwinding the operation claim again if that last
+// step fails.
 func postServerModpackInstall(c *gin.Context) {
 	s := middleware.ExtractServer(c)
 	manager := middleware.ExtractManager(c)
@@ -31,10 +33,10 @@ func postServerModpackInstall(c *gin.Context) {
 		return
 	}
 
-	// An exact repeat of the install currently running means our earlier
-	// 202 was lost in transit somewhere; answer it again without starting a
-	// second job...
-	if active := s.ActiveModpackInstallID(); active != "" && active == req.InstallID {
+	// An exact repeat of the install currently running, or of the one that
+	// finished most recently, means our earlier 202 was lost in transit
+	// somewhere; answer it again without starting a second job...
+	if s.IsRecentModpackInstallID(req.InstallID) {
 		c.JSON(http.StatusAccepted, gin.H{"install_id": req.InstallID})
 		return
 	}
@@ -71,6 +73,12 @@ func postServerModpackInstall(c *gin.Context) {
 		})
 		return
 	}
+
+	// Record the attempt's identity while both claims are held and before
+	// the job is spawned, so a retry arriving the instant after this
+	// response is written already sees it as a repeat rather than being
+	// admitted as a second job...
+	s.SetActiveModpackInstallID(req.InstallID)
 
 	go s.RunModpackInstall(req, release)
 
