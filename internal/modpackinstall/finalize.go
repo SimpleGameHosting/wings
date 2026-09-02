@@ -1,7 +1,6 @@
 package modpackinstall
 
 import (
-	"io"
 	"path"
 	"strconv"
 	"strings"
@@ -23,6 +22,13 @@ const (
 	neoforgeLibraryDir    = "libraries/net/neoforged/neoforge"
 )
 
+// errLoaderNotInstalled reports that a mod loader's library directory is
+// either absent or carries no version subdirectory, which is how both egg
+// scripts read an empty `ls ... | sort -V | tail -1`. It is a "this loader
+// was simply not installed" signal rather than a failure, so finalize can
+// move on to the next rule instead of aborting the install.
+var errLoaderNotInstalled = errors.Sentinel("modpackinstall: loader is not installed")
+
 // Finalize applies the per-kind, per-loader fixups that the tails of both
 // SGH egg install scripts performed after extraction, translated into pure
 // Go so Wings never has to shell out to Java to prepare a server for its
@@ -39,7 +45,9 @@ func Finalize(fs *filesystem.Filesystem, kind Kind, vt VersionType) error {
 
 	switch kind {
 	case KindModpack:
-		return finalizeModpack(fs)
+		// A modpack archive carries whatever loader it was built against,
+		// so the shared Forge/NeoForge tail is the whole of its finalize...
+		return finalizeForge(fs)
 	case KindVersion:
 		return finalizeVersion(fs, vt)
 	default:
@@ -47,83 +55,79 @@ func Finalize(fs *filesystem.Filesystem, kind Kind, vt VersionType) error {
 	}
 }
 
-// finalizeModpack applies the SGH Modpack Installer egg script's tail. A
-// modern Forge layout gets its unix_args.txt symlinked into place plus its
-// launch shim copied to the root; a modern NeoForge layout only needs the
-// symlink. The two checks run independently rather than as mutually
-// exclusive branches, mirroring the original script, but the legacy
-// fallback below is itself guarded so it never fires once a loader has
-// already resolved unix_args.txt.
-func finalizeModpack(fs *filesystem.Filesystem) error {
-	// First, look for a modern Forge install and link its launch files in
-	// if one is present...
+// finalizeForge is the one Forge/NeoForge tail both egg install scripts
+// share, as pinned by panel migration 2026_03_03_000001_fix_forge_21_unix_args.
+// It recognizes three eras of Forge layout in order. Forge 1.21+ ships a
+// root server.jar that is itself the bootstrap shim, so nothing is
+// published for it; Forge 1.17-1.20 needs root unix_args.txt symlinked
+// into the installed version's own copy; and a pre-1.17 pack that dropped
+// a bare universal jar at the root has that jar renamed to server.jar. A
+// NeoForge install always just needs the symlink. Every step tolerates its
+// loader being absent, since an install only ever carries one of them.
+func finalizeForge(fs *filesystem.Filesystem) error {
+	// First, resolve a modern Forge layout if the archive brought one...
 	forgeVersion, err := latestSubdir(fs, forgeLibraryDir)
 	switch {
 	case err == nil:
-		if err := linkModpackForge(fs, forgeVersion); err != nil {
+		if err := linkForgeUnixArgs(fs, forgeVersion); err != nil {
 			return err
 		}
-	case !errors.Is(err, ufs.ErrNotExist):
+	case !errors.Is(err, errLoaderNotInstalled):
 		return err
 	}
 
-	// Next, do the same for a modern NeoForge install; finding one ends the
-	// function here since NeoForge needs nothing further...
+	// Next, do the same for a modern NeoForge install, whose own launch
+	// arguments need no rewriting and so end the tail here...
 	neoforgeVersion, err := latestSubdir(fs, neoforgeLibraryDir)
 	switch {
 	case err == nil:
 		return symlinkUnixArgsTo(fs, path.Join(neoforgeLibraryDir, neoforgeVersion))
-	case !errors.Is(err, ufs.ErrNotExist):
+	case !errors.Is(err, errLoaderNotInstalled):
 		return err
 	}
 
-	// Neither modern layout was found, so fall back to the legacy
-	// standalone forge-*.jar rename; it no-ops on its own if Forge already
-	// resolved unix_args.txt above...
+	// Neither modern layout resolved a launch target, so fall back to the
+	// legacy standalone forge-*.jar rename; it no-ops on its own when
+	// something above already put one in place...
 	return legacyForgeJarFallback(fs)
 }
 
-// linkModpackForge symlinks root unix_args.txt to the installed Forge
-// version's own copy and copies its launch shim jar to the root when
-// present, matching the modpack egg script's Forge branch.
-func linkModpackForge(fs *filesystem.Filesystem, version string) error {
+// linkForgeUnixArgs publishes root unix_args.txt for a modern Forge
+// install, unless this is Forge 1.21+. From 1.21 on, Forge's installer
+// leaves a root server.jar whose manifest Class-Path resolves relative to
+// the jar's own location, so adding @unix_args.txt on top of it hides the
+// securemodules jar and the server dies on a missing
+// UnionFileSystemProvider; those installs are left exactly as extracted.
+func linkForgeUnixArgs(fs *filesystem.Filesystem, version string) error {
 	base := path.Join(forgeLibraryDir, version)
 
-	if err := symlinkUnixArgsTo(fs, base); err != nil {
-		return err
-	}
-
-	return copyModpackForgeShim(fs, base, version)
-}
-
-// copyModpackForgeShim copies the Forge version's launch shim jar to the
-// server root when the installer produced one, using cp semantics: the
-// source stays under libraries/, since the version-install path also needs
-// it there.
-func copyModpackForgeShim(fs *filesystem.Filesystem, base, version string) error {
-	shimName := "forge-" + version + "-shim.jar"
-	shimPath := path.Join(base, shimName)
-
-	exists, err := pathExists(fs, shimPath)
+	// The rule only applies when the installed version actually published
+	// launch arguments of its own to point at...
+	argsPresent, err := pathExists(fs, path.Join(base, unixArgsFileName))
 	if err != nil {
 		return err
 	}
-	if !exists {
+	if !argsPresent {
 		return nil
 	}
 
-	if err := copyFile(fs, shimPath, shimName); err != nil {
-		return errors.Wrap(err, "modpackinstall: failed to copy forge shim jar to root")
+	bootstrapPresent, err := pathExists(fs, serverJarName)
+	if err != nil {
+		return err
 	}
-	return nil
+	if bootstrapPresent {
+		return nil
+	}
+
+	return symlinkUnixArgsTo(fs, base)
 }
 
-// legacyForgeJarFallback handles an old-style modpack archive that dropped
-// a bare universal Forge jar at the root instead of the modern
+// legacyForgeJarFallback handles an old-style pack or version archive that
+// dropped a bare universal Forge jar at the root instead of the modern
 // libraries/net/minecraftforge/forge/<version> layout. It only fires when
 // neither a loader symlink nor an existing server.jar already resolved the
 // launch target. Finding no candidate simply means this was not a legacy
-// Forge modpack, so it is left untouched; finding more than one is
+// Forge install, so it is left untouched; finding more than one is
 // ambiguous and fails loudly rather than guessing the way the reference
 // shell script's unconditional first-match rename did.
 func legacyForgeJarFallback(fs *filesystem.Filesystem) error {
@@ -165,18 +169,18 @@ func legacyForgeJarFallback(fs *filesystem.Filesystem) error {
 }
 
 // finalizeVersion applies the SGH Version Installer egg script's tail,
-// which differs per loader: Forge needs its launch arguments rewritten
-// with an absolute shim path, NeoForge only needs a symlink, Fabric
-// renames its launcher jar, and every other known type just needs
-// server.jar in place. An unrecognized VersionType is refused outright
-// rather than falling through to generic handling, even though Request.
-// Validate should already have ruled that out before Finalize ever runs.
+// which differs per loader: Forge and NeoForge run the same shared tail as
+// a modpack does, Fabric renames its launcher jar, and every other known
+// type just needs server.jar in place. An unrecognized VersionType is
+// refused outright rather than falling through to generic handling, even
+// though Request.Validate should already have ruled that out before
+// Finalize ever runs.
 func finalizeVersion(fs *filesystem.Filesystem, vt VersionType) error {
 	switch vt {
-	case VersionForge:
-		return finalizeVersionForge(fs)
-	case VersionNeoForge:
-		return finalizeVersionNeoforge(fs)
+	case VersionForge, VersionNeoForge:
+		// The script's `forge|neoforge)` branch runs one tail for both,
+		// checking each loader's library directory in turn...
+		return finalizeForge(fs)
 	case VersionFabric:
 		return finalizeVersionFabric(fs)
 	case VersionVanilla, VersionSnapshot, VersionPaper, VersionPurpur, VersionSponge, VersionVelocity:
@@ -184,57 +188,6 @@ func finalizeVersion(fs *filesystem.Filesystem, vt VersionType) error {
 	default:
 		return errors.Errorf("modpackinstall: unknown version_type %q", vt)
 	}
-}
-
-// finalizeVersionForge rewrites the installed Forge loader's unix_args.txt
-// into a real root-level file with its shim jar path fully qualified,
-// since a KindVersion install runs from the server root rather than from
-// inside libraries/net/minecraftforge/forge/<version>, where Forge's own
-// installer wrote a path relative to itself.
-func finalizeVersionForge(fs *filesystem.Filesystem) error {
-	version, err := latestSubdir(fs, forgeLibraryDir)
-	if err != nil {
-		return errors.Wrap(err, "modpackinstall: failed to locate installed forge version")
-	}
-	base := path.Join(forgeLibraryDir, version)
-
-	content, err := readFileString(fs, path.Join(base, unixArgsFileName))
-	if err != nil {
-		return errors.Wrap(err, "modpackinstall: failed to read forge unix_args.txt")
-	}
-	rewritten := rewriteForgeShimPath(content, base, version)
-
-	if err := fs.Write(unixArgsFileName, strings.NewReader(rewritten), int64(len(rewritten)), 0o644); err != nil {
-		return errors.Wrap(err, "modpackinstall: failed to write unix_args.txt")
-	}
-	return nil
-}
-
-// rewriteForgeShimPath substitutes the bare forge-<version>-shim.jar token
-// Forge's installer writes into unix_args.txt with its real path under
-// libraries/, so the JVM can still find the shim jar when launched from
-// the server root. The already-qualified check guards against
-// double-prefixing content that (for whatever reason) already carries the
-// base directory.
-func rewriteForgeShimPath(content, base, version string) string {
-	shimName := "forge-" + version + "-shim.jar"
-	qualified := path.Join(base, shimName)
-
-	if strings.Contains(content, base+"/forge-") {
-		return content
-	}
-	return strings.ReplaceAll(content, shimName, qualified)
-}
-
-// finalizeVersionNeoforge publishes root unix_args.txt as a symlink into
-// the installed NeoForge version's own copy. Unlike Forge, NeoForge's
-// unix_args.txt needs no path rewriting, so a symlink is enough.
-func finalizeVersionNeoforge(fs *filesystem.Filesystem) error {
-	version, err := latestSubdir(fs, neoforgeLibraryDir)
-	if err != nil {
-		return errors.Wrap(err, "modpackinstall: failed to locate installed neoforge version")
-	}
-	return symlinkUnixArgsTo(fs, path.Join(neoforgeLibraryDir, version))
 }
 
 // finalizeVersionFabric renames Fabric's launcher jar to server.jar when
@@ -295,8 +248,8 @@ func writeEula(fs *filesystem.Filesystem) error {
 }
 
 // refuseInstallerJar fails the install loudly when a Forge/NeoForge
-// installer.jar made it to the root. Version archives are pre-built by the
-// panel and Wings must never run Java to execute one.
+// installer.jar made it to the root. Both modpack and version archives are
+// pre-built by the panel and Wings must never run Java to execute one.
 func refuseInstallerJar(fs *filesystem.Filesystem) error {
 	exists, err := pathExists(fs, installerJarName)
 	if err != nil {
@@ -310,42 +263,13 @@ func refuseInstallerJar(fs *filesystem.Filesystem) error {
 
 // symlinkUnixArgsTo publishes root unix_args.txt as a symlink into dir,
 // the shape every loader whose own launch arguments need no rewriting
-// (both NeoForge branches, and Forge's modpack branch) shares.
+// (Forge 1.17-1.20 and NeoForge) shares.
 func symlinkUnixArgsTo(fs *filesystem.Filesystem, dir string) error {
 	target := path.Join(dir, unixArgsFileName)
 	if err := fs.OverwriteSymlink(target, unixArgsFileName); err != nil {
 		return errors.Wrap(err, "modpackinstall: failed to symlink unix_args.txt")
 	}
 	return nil
-}
-
-// copyFile duplicates src's bytes to dst inside fs without removing src,
-// matching the reference scripts' `cp` semantics. Replace, by contrast,
-// moves the entry and would leave nothing behind under libraries/.
-func copyFile(fs *filesystem.Filesystem, src, dst string) error {
-	f, st, err := fs.File(src)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return fs.Write(dst, f, st.Size(), 0o644)
-}
-
-// readFileString reads p's entire content into a string and closes the
-// handle before returning, for the small text files finalize rewrites.
-func readFileString(fs *filesystem.Filesystem, p string) (string, error) {
-	f, _, err := fs.File(p)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	data, err := io.ReadAll(f)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
 }
 
 // pathExists reports whether p is present on fs, treating a missing entry
@@ -380,13 +304,17 @@ func rootJars(fs *filesystem.Filesystem) ([]string, error) {
 
 // latestSubdir returns the name of dir's immediate subdirectory that sorts
 // last under compareVersionish, the same "pick the newest installed
-// version" intent as the shell scripts' `sort -V | tail -n1`. It reports
-// ufs.ErrNotExist (checkable with errors.Is) when dir itself is absent, so
-// callers can tell "this loader was never installed" apart from a genuine
-// read failure.
+// version" intent as the shell scripts' `sort -V | tail -n1`. A missing
+// directory and a directory holding no version subdirectory both report
+// errLoaderNotInstalled (checkable with errors.Is), the Go stand-in for
+// the scripts' `-n "$FORGE_VERSION"` guard, so neither shape fails an
+// install that simply used a different loader.
 func latestSubdir(fs *filesystem.Filesystem, dir string) (string, error) {
 	entries, err := fs.ReadDir(dir)
 	if err != nil {
+		if errors.Is(err, ufs.ErrNotExist) {
+			return "", errLoaderNotInstalled
+		}
 		return "", err
 	}
 
@@ -400,7 +328,7 @@ func latestSubdir(fs *filesystem.Filesystem, dir string) (string, error) {
 		}
 	}
 	if latest == "" {
-		return "", errors.Errorf("modpackinstall: %q has no version subdirectories", dir)
+		return "", errLoaderNotInstalled
 	}
 
 	return latest, nil
