@@ -125,10 +125,11 @@ func (s *Server) runModpackInstallPipeline(ctx context.Context, req modpackinsta
 
 	status("cleaning")
 	if err := modpackinstall.Clean(s.Filesystem(), req.Kind); err != nil {
-		// Clean only ever touches this server's own sandboxed filesystem, so
-		// its error is already free of anything that should not reach the
-		// panel UI; propagate it as-is instead of masking the real cause.
-		return err
+		// Unlike the other modpackinstall calls below, Clean returns bare
+		// filesystem errors with no stage context of their own, so wrap
+		// here rather than propagating it unlabeled; nothing about the
+		// cause is secret, since Clean never touches the network.
+		return errors.Wrap(err, "modpackinstall: failed to clean the server directory")
 	}
 
 	status("downloading")
