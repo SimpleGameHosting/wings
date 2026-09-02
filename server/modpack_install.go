@@ -14,11 +14,65 @@ import (
 
 // ModpackInstallStatus is the payload of every "modpack install status"
 // websocket event. Error carries a sanitized message only, since it is
-// relayed straight to the panel UI.
+// relayed straight to the panel UI, and ErrorCode carries the stable
+// machine-readable classification of the same failure, one of the
+// ModpackInstallError constants below, so the panel can branch on an
+// outcome without parsing English out of a message that may be reworded.
+// Both are absent from a successful attempt's events.
 type ModpackInstallStatus struct {
 	InstallID string `json:"install_id"`
 	State     string `json:"state"`
 	Error     string `json:"error,omitempty"`
+	ErrorCode string `json:"error_code,omitempty"`
+}
+
+// The stable error codes a failed native install reports, on both the
+// terminal status event and the panel callback. They name the pipeline
+// stage that failed, except for the two that describe how the attempt
+// ended rather than where: ModpackInstallErrorTimeout when the attempt's
+// own deadline expired, and ModpackInstallErrorInternal for a cancelled
+// job or a recovered panic. The set is a contract with the panel and must
+// only ever grow.
+const (
+	ModpackInstallErrorStopFailed     = "stop_failed"
+	ModpackInstallErrorSyncFailed     = "sync_failed"
+	ModpackInstallErrorCleanFailed    = "clean_failed"
+	ModpackInstallErrorDownloadFailed = "download_failed"
+	ModpackInstallErrorExtractFailed  = "extract_failed"
+	ModpackInstallErrorFinalizeFailed = "finalize_failed"
+	ModpackInstallErrorTimeout        = "timeout"
+	ModpackInstallErrorInternal       = "internal_error"
+)
+
+// stageError pairs a pipeline stage's failure with the stable code that
+// classifies it, so the finisher can report both without having to guess
+// the stage back out of an error message.
+type stageError struct {
+	code string
+	err  error
+}
+
+// Error returns the wrapped failure's message, which is the sanitized text
+// the panel and the websocket receive.
+func (e *stageError) Error() string {
+	return e.err.Error()
+}
+
+// Unwrap exposes the underlying failure so errors.Is and errors.As still
+// see through the classification wrapper.
+func (e *stageError) Unwrap() error {
+	return e.err
+}
+
+// modpackInstallErrorCode classifies a finished attempt's error for the
+// panel. A stage that tagged its own failure decides the code; anything
+// else, a recovered panic in particular, is an internal error.
+func modpackInstallErrorCode(err error) string {
+	var stage *stageError
+	if errors.As(err, &stage) {
+		return stage.code
+	}
+	return ModpackInstallErrorInternal
 }
 
 // ModpackInstallProgress is the payload of "modpack install progress".
@@ -150,14 +204,45 @@ func (s *Server) runModpackInstallPipeline(ctx context.Context, req modpackinsta
 		s.Events().Publish(ModpackInstallStatusEvent, ModpackInstallStatus{InstallID: req.InstallID, State: state})
 	}
 
+	// fail classifies a stage's failure, upgrading it to the timeout code
+	// when the attempt's own deadline is what actually stopped it rather
+	// than anything about the stage itself...
+	fail := func(code string, err error) error {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return &stageError{code: ModpackInstallErrorTimeout, err: err}
+		}
+		return &stageError{code: code, err: err}
+	}
+
+	// interrupted ends the attempt between two stages once the job context
+	// is done, so a daemon shutdown or a server deleted mid-install stops
+	// promptly instead of running the rest of the pipeline against a
+	// server nobody is waiting for any more...
+	interrupted := func() error {
+		switch err := ctx.Err(); {
+		case err == nil:
+			return nil
+		case errors.Is(err, context.DeadlineExceeded):
+			return &stageError{code: ModpackInstallErrorTimeout, err: errors.New("modpackinstall: timed out")}
+		default:
+			return &stageError{code: ModpackInstallErrorInternal, err: errors.New("modpackinstall: cancelled")}
+		}
+	}
+
 	status("stopping")
 	if err := s.Environment.WaitForStop(ctx, 10*time.Second, true); err != nil {
-		return errors.New("modpackinstall: failed to stop the server")
+		return fail(ModpackInstallErrorStopFailed, errors.New("modpackinstall: failed to stop the server"))
+	}
+	if err := interrupted(); err != nil {
+		return err
 	}
 
 	status("syncing")
 	if err := s.Sync(); err != nil {
-		return errors.New("modpackinstall: failed to sync server configuration")
+		return fail(ModpackInstallErrorSyncFailed, errors.New("modpackinstall: failed to sync server configuration"))
+	}
+	if err := interrupted(); err != nil {
+		return err
 	}
 
 	status("cleaning")
@@ -166,7 +251,10 @@ func (s *Server) runModpackInstallPipeline(ctx context.Context, req modpackinsta
 		// filesystem errors with no stage context of their own, so wrap
 		// here rather than propagating it unlabeled; nothing about the
 		// cause is secret, since Clean never touches the network.
-		return errors.Wrap(err, "modpackinstall: failed to clean the server directory")
+		return fail(ModpackInstallErrorCleanFailed, errors.Wrap(err, "modpackinstall: failed to clean the server directory"))
+	}
+	if err := interrupted(); err != nil {
+		return err
 	}
 
 	status("downloading")
@@ -176,27 +264,38 @@ func (s *Server) runModpackInstallPipeline(ctx context.Context, req modpackinsta
 		})
 	}
 	if _, err := modpackinstall.Download(ctx, s.Filesystem(), req.DownloadURL, progress); err != nil {
-		return err // download errors are already sanitized of the signed URL
+		// Download errors are already sanitized of the signed URL.
+		return fail(ModpackInstallErrorDownloadFailed, err)
+	}
+	if err := interrupted(); err != nil {
+		return err
 	}
 
 	// A raw jar artifact is placed directly under its runtime name; anything
-	// else is an archive that must be extracted and settled into place...
+	// else is an archive that must be extracted and settled into place. Both
+	// are the same step to the panel, so both report extract_failed...
 	if req.ArchiveFormat == modpackinstall.FormatJar {
 		if err := modpackinstall.PlaceJar(s.Filesystem(), "server.jar"); err != nil {
-			return err
+			return fail(ModpackInstallErrorExtractFailed, err)
 		}
 	} else {
 		status("extracting")
 		if err := modpackinstall.ExtractToStaging(ctx, s.Filesystem()); err != nil {
-			return err
+			return fail(ModpackInstallErrorExtractFailed, err)
 		}
 		if err := modpackinstall.Settle(s.Filesystem()); err != nil {
-			return err
+			return fail(ModpackInstallErrorExtractFailed, err)
 		}
+	}
+	if err := interrupted(); err != nil {
+		return err
 	}
 
 	status("finalizing")
-	return modpackinstall.Finalize(s.Filesystem(), req.Kind, req.VersionType)
+	if err := modpackinstall.Finalize(s.Filesystem(), req.Kind, req.VersionType); err != nil {
+		return fail(ModpackInstallErrorFinalizeFailed, err)
+	}
+	return nil
 }
 
 // finishModpackInstall is the single exit path for a native install attempt,
@@ -221,9 +320,14 @@ func (s *Server) finishModpackInstall(req modpackinstall.Request, installErr err
 	terminal := ModpackInstallStatus{InstallID: req.InstallID, State: "completed"}
 	if installErr != nil {
 		result.Error = installErr.Error()
+		result.ErrorCode = modpackInstallErrorCode(installErr)
 		terminal.State = "failed"
-		terminal.Error = installErr.Error()
-		s.Log().WithField("error", installErr).WithField("install_id", req.InstallID).Warn("modpack install: attempt failed")
+		terminal.Error = result.Error
+		terminal.ErrorCode = result.ErrorCode
+		s.Log().WithField("error", installErr).
+			WithField("error_code", result.ErrorCode).
+			WithField("install_id", req.InstallID).
+			Warn("modpack install: attempt failed")
 	}
 
 	if err := s.client.SendModpackInstallResult(context.Background(), s.ID(), result); err != nil {

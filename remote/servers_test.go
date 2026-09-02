@@ -138,6 +138,7 @@ func TestSendModpackInstallResult(t *testing.T) {
 		assert.Equal(t, "11111111-2222-3333-4444-555555555555", data["install_id"])
 		assert.Equal(t, true, data["successful"])
 		assert.EqualValues(t, 4200, data["duration_ms"])
+		assert.Equal(t, "", data["error_code"])
 
 		rw.WriteHeader(http.StatusNoContent)
 	})
@@ -155,8 +156,14 @@ func TestSendModpackInstallResult(t *testing.T) {
 // allowed retry instead of being dropped outright.
 func TestSendModpackInstallResultRetriesOnFailure(t *testing.T) {
 	attempts := 0
-	c, server := createTestClient(func(rw http.ResponseWriter, _ *http.Request) {
+	var last map[string]interface{}
+	c, server := createTestClient(func(rw http.ResponseWriter, r *http.Request) {
 		attempts++
+
+		b, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		assert.NoError(t, json.Unmarshal(b, &last))
+
 		if attempts == 1 {
 			rw.WriteHeader(http.StatusInternalServerError)
 			return
@@ -169,8 +176,14 @@ func TestSendModpackInstallResultRetriesOnFailure(t *testing.T) {
 		InstallID:  "11111111-2222-3333-4444-555555555555",
 		Successful: false,
 		Error:      "download failed",
+		ErrorCode:  "download_failed",
 	})
 
 	assert.NoError(t, err)
 	assert.Equal(t, 2, attempts)
+
+	// The stable code has to survive the retry alongside the message, since
+	// the panel keys its own handling off the code...
+	assert.Equal(t, "download failed", last["error"])
+	assert.Equal(t, "download_failed", last["error_code"])
 }

@@ -66,6 +66,11 @@ func (e *modpackInstallTestEnvironment) WaitForStop(ctx context.Context, _ time.
 // wired against.
 type modpackInstallFixture struct {
 	manager *wserver.Manager
+
+	// results receives every terminal report the finished jobs send back
+	// to the panel, so a case can assert on the outcome the panel would
+	// actually see rather than only on the HTTP response.
+	results chan remote.ModpackInstallResultRequest
 }
 
 // newModpackInstallFixture pins the node-wide install cap to maxConcurrent
@@ -87,7 +92,12 @@ func newModpackInstallFixture(t *testing.T, maxConcurrent int) *modpackInstallFi
 	config.Set(&next)
 	t.Cleanup(func() { config.Set(previous) })
 
-	return &modpackInstallFixture{manager: wserver.NewEmptyManager(backupTestRemoteClient{})}
+	results := make(chan remote.ModpackInstallResultRequest, 4)
+
+	return &modpackInstallFixture{
+		manager: wserver.NewEmptyManager(backupTestRemoteClient{modpackResults: results}),
+		results: results,
+	}
 }
 
 // newServer builds a server tracked by the fixture's manager, cancelling its
@@ -214,6 +224,20 @@ func reserveAllModpackInstallSlots(t *testing.T, fixture *modpackInstallFixture,
 			t.Fatalf("timed out waiting for all %d install slots to become free", count)
 		}
 		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// waitForModpackInstallResult returns the next terminal report a finished
+// job sent to the panel, failing the test if none arrives in time.
+func waitForModpackInstallResult(t *testing.T, fixture *modpackInstallFixture, timeout time.Duration) remote.ModpackInstallResultRequest {
+	t.Helper()
+
+	select {
+	case result := <-fixture.results:
+		return result
+	case <-time.After(timeout):
+		t.Fatal("timed out waiting for the install job to report its result to the panel")
+		return remote.ModpackInstallResultRequest{}
 	}
 }
 
@@ -498,4 +522,31 @@ func TestModpackInstallSlotExhaustionReturns409AndReleasesOnFailure(t *testing.T
 
 	waitForActiveModpackInstallID(t, s, "", 5*time.Second)
 	releases[1]()
+}
+
+// TestModpackInstallReportsStageErrorCode pins Ruling 16 end to end: a job
+// that fails in the stopping stage reports the stable stop_failed code
+// alongside its sanitized message, so the panel can branch on the outcome
+// without parsing the message text.
+func TestModpackInstallReportsStageErrorCode(t *testing.T) {
+	fixture := newModpackInstallFixture(t, 2)
+	s := fixture.newServer(t, testModpackInstallServerID)
+	archive := newModpackArchiveServer(t)
+
+	c, recorder := fixture.newContext(t, s, validModpackInstallBody(uuid.NewString(), archive.URL))
+	postServerModpackInstall(c)
+	if recorder.Code != http.StatusAccepted {
+		t.Fatalf("expected a valid request against an idle server to return 202, got %d body %s", recorder.Code, recorder.Body.String())
+	}
+
+	result := waitForModpackInstallResult(t, fixture, 5*time.Second)
+	if result.Successful {
+		t.Fatal("expected the fixture environment's stop failure to fail the attempt")
+	}
+	if result.ErrorCode != wserver.ModpackInstallErrorStopFailed {
+		t.Fatalf("expected error_code %q, got %q (error %q)", wserver.ModpackInstallErrorStopFailed, result.ErrorCode, result.Error)
+	}
+	if result.Error == "" {
+		t.Fatal("expected the sanitized error message to survive alongside the code")
+	}
 }

@@ -28,8 +28,9 @@ func init() {
 
 // backupTestRemoteClient supplies the remote operations used by router tests.
 type backupTestRemoteClient struct {
-	restoreStatus chan string
-	credentials   chan [2]string
+	restoreStatus  chan string
+	credentials    chan [2]string
+	modpackResults chan remote.ModpackInstallResultRequest
 }
 
 func (c backupTestRemoteClient) GetBackupRemoteUploadURLs(context.Context, string, int64) (remote.BackupRemoteUploadResponse, error) {
@@ -98,9 +99,16 @@ func (c backupTestRemoteClient) SendPlayerEvents(context.Context, string, []remo
 	return nil
 }
 
-// SendModpackInstallResult satisfies the SGH remote client contract for
-// router tests that do not exercise native modpack install reporting.
-func (c backupTestRemoteClient) SendModpackInstallResult(context.Context, string, remote.ModpackInstallResultRequest) error {
+// SendModpackInstallResult records the terminal report of a native install
+// attempt for the tests that assert on it, and is a no-op for the ones
+// that do not wire up a channel.
+func (c backupTestRemoteClient) SendModpackInstallResult(_ context.Context, _ string, data remote.ModpackInstallResultRequest) error {
+	if c.modpackResults != nil {
+		select {
+		case c.modpackResults <- data:
+		default:
+		}
+	}
 	return nil
 }
 

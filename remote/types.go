@@ -263,10 +263,15 @@ type PlayerEventBatch struct {
 
 // ModpackInstallResultRequest reports the terminal outcome of one native
 // modpack/version install attempt back to the panel. The panel fences on
-// InstallID, so a stale or duplicate report is harmless.
+// InstallID, so a stale or duplicate report is harmless. Error is the
+// sanitized human-readable message and ErrorCode its stable machine
+// classification: stop_failed, sync_failed, clean_failed, download_failed,
+// extract_failed, finalize_failed, timeout, or internal_error. Both are
+// empty on a successful attempt.
 type ModpackInstallResultRequest struct {
 	InstallID  string `json:"install_id"`
 	Successful bool   `json:"successful"`
 	Error      string `json:"error"`
+	ErrorCode  string `json:"error_code"`
 	DurationMs int64  `json:"duration_ms"`
 }
