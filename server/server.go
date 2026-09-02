@@ -72,6 +72,14 @@ type Server struct {
 	// record a new one as a single atomic step instead of two racing ones.
 	operation operationLock
 
+	// Tracks the install_id of the native modpack/version install currently
+	// running against this server, if any, so a retried request can be told
+	// apart from a genuinely new one.
+	modpackInstall struct {
+		mu       sync.Mutex
+		activeID string
+	}
+
 	// The console throttler instance used to control outputs.
 	throttler    *ConsoleThrottle
 	throttleOnce sync.Once

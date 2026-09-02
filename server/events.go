@@ -19,6 +19,8 @@ const (
 	TransferLogsEvent           = "transfer logs"
 	TransferStatusEvent         = "transfer status"
 	DeletedEvent                = "deleted"
+	ModpackInstallStatusEvent   = "modpack install status"
+	ModpackInstallProgressEvent = "modpack install progress"
 )
 
 // Events returns the server's emitter instance.

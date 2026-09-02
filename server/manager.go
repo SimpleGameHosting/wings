@@ -29,6 +29,15 @@ type Manager struct {
 	client  remote.Client
 	servers []*Server
 	uploads *UploadManager
+
+	// modpackInstallSlots caps how many native modpack/version installs may
+	// run at once across every server on this node. The cap itself lives in
+	// config rather than here, so nothing about this field depends on
+	// config being loaded yet at construction time.
+	modpackInstallSlots struct {
+		mu     sync.Mutex
+		active int
+	}
 }
 
 // NewManager returns a new server manager instance. This will boot up all the
