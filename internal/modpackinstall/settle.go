@@ -2,9 +2,7 @@ package modpackinstall
 
 import (
 	"context"
-	"os"
 	"path"
-	"path/filepath"
 	"strings"
 
 	"emperror.dev/errors"
@@ -51,11 +49,11 @@ func ExtractToStaging(ctx context.Context, fs *filesystem.Filesystem) error {
 // Settle merge-moves everything staged into the server root and then removes
 // the install artifacts, leaving the server directory as though the archive
 // had always lived there. The merge semantics are ported from
-// mmi-install-binary's mover.go: files publish over whatever they replace,
-// directories merge recursively into an existing directory, an existing
-// entry of the wrong type is deleted before the staged one takes its place,
-// symlinks are recreated at the destination rather than followed, and macOS
-// "._" resource-fork junk is dropped instead of copied.
+// mmi-install-binary's mover.go: files and symlinks alike publish over
+// whatever they replace, directories merge recursively into an existing
+// directory, an existing entry of the wrong type is deleted before the
+// staged one takes its place, and macOS "._" resource-fork junk is dropped
+// instead of copied.
 func Settle(fs *filesystem.Filesystem) error {
 	if err := settleDir(fs, StagingDirName, "/"); err != nil {
 		return err
@@ -102,35 +100,38 @@ func settleDir(fs *filesystem.Filesystem, src, dst string) error {
 		srcPath := path.Join(src, name)
 		dstPath := path.Join(dst, name)
 
-		switch {
-		case entry.Type()&ufs.ModeSymlink != 0:
-			if err := settleSymlink(fs, srcPath, dstPath); err != nil {
-				return err
-			}
-		case entry.IsDir():
+		if entry.IsDir() {
 			if err := settleDirEntry(fs, srcPath, dstPath, name, dst); err != nil {
 				return err
 			}
-		default:
-			if err := settleFileEntry(fs, srcPath, dstPath); err != nil {
-				return err
-			}
+			continue
+		}
+
+		// Files and symlinks both settle through settleFileEntry: Replace
+		// renames the directory entry itself, and renameat(2) never follows
+		// the final component of a path, so a symlink source moves as the
+		// link, never as whatever it points to...
+		if err := settleFileEntry(fs, srcPath, dstPath); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-// settleFileEntry publishes a single staged file at dstPath. A directory
-// currently occupying that path is cleared first, since neither Replace nor
-// the rename it relies on can place a file where a directory stands.
+// settleFileEntry publishes a single staged file or symlink at dstPath by
+// renaming it into place. A directory currently occupying that path is
+// cleared first, since neither Replace nor the rename it relies on can place
+// an entry where a directory stands.
 func settleFileEntry(fs *filesystem.Filesystem, srcPath, dstPath string) error {
 	if err := clearDirectoryConflict(fs, dstPath); err != nil {
 		return err
 	}
 
-	// Replace renames the staged file into place and keeps quota accounting
-	// correct for whatever file it overwrote...
+	// Replace renames the staged entry into place and keeps quota accounting
+	// correct for whatever file it overwrote. A symlink source is moved
+	// intact, since the underlying rename operates on the directory entry
+	// and never dereferences it...
 	if err := fs.Replace(srcPath, dstPath); err != nil {
 		return errors.Wrap(err, "modpackinstall: settle move failed")
 	}
@@ -153,33 +154,6 @@ func settleDirEntry(fs *filesystem.Filesystem, srcPath, dstPath, name, dst strin
 	return settleDir(fs, srcPath, dstPath)
 }
 
-// settleSymlink recreates a staged symlink at dstPath by reading its own
-// target text rather than following it, since a symlink's target need not
-// exist on disk yet, whether because the archive never included it or
-// because this same install has not placed it there yet.
-func settleSymlink(fs *filesystem.Filesystem, srcPath, dstPath string) error {
-	target, err := readSymlinkTarget(fs, srcPath)
-	if err != nil {
-		return errors.Wrap(err, "modpackinstall: settle readlink failed")
-	}
-
-	if err := fs.OverwriteSymlink(target, dstPath); err != nil {
-		return errors.Wrap(err, "modpackinstall: settle symlink failed")
-	}
-
-	return nil
-}
-
-// readSymlinkTarget returns the raw link text of the symlink at
-// relativePath, without following it. The sandboxed filesystem type exposes
-// no readlink accessor of its own, so this reads the link directly by
-// joining the filesystem's own base path; relativePath always comes from a
-// directory listing this package already produced, so it can never carry a
-// traversal segment.
-func readSymlinkTarget(fs *filesystem.Filesystem, relativePath string) (string, error) {
-	return os.Readlink(filepath.Join(fs.Path(), relativePath))
-}
-
 // clearFileConflict removes a file occupying dstPath so a staged directory
 // can be created there, mirroring moveDirectory's os.RemoveAll ahead of the
 // merge in the reference installer's mover.go.
@@ -187,9 +161,10 @@ func clearFileConflict(fs *filesystem.Filesystem, dstPath string) error {
 	return clearIfWrongType(fs, dstPath, true)
 }
 
-// clearDirectoryConflict removes a directory occupying dstPath so a staged
-// file can be placed there, mirroring moveFile's os.RemoveAll ahead of the
-// rename in the reference installer's mover.go.
+// clearDirectoryConflict removes a directory (empty or not) occupying
+// dstPath so a staged file or symlink can be placed there, mirroring
+// moveFile's unconditional os.RemoveAll ahead of the rename in the
+// reference installer's mover.go.
 func clearDirectoryConflict(fs *filesystem.Filesystem, dstPath string) error {
 	return clearIfWrongType(fs, dstPath, false)
 }

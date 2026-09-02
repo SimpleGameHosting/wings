@@ -111,3 +111,21 @@ func TestSettleOverwritesDirectoryWithFile(t *testing.T) {
 
 	assertContent(t, fs, "config.txt", "new-file-content")
 }
+
+// TestSettleSymlinkOverwritesNonEmptyDirectory ports the same overwrite
+// contract to a symlink entry: OverwriteSymlink alone refuses a non-empty
+// directory, so a staged symlink has to settle through the same
+// clear-then-place path a regular file uses.
+func TestSettleSymlinkOverwritesNonEmptyDirectory(t *testing.T) {
+	fs := newTestFs(t)
+	mustWrite(t, fs, "link.txt/nested.txt", "old-nested")
+	if err := fs.Symlink("target.txt", StagingDirName+"/link.txt"); err != nil {
+		t.Fatalf("stage symlink: %v", err)
+	}
+
+	if err := Settle(fs); err != nil {
+		t.Fatalf("settle: %v", err)
+	}
+
+	assertSymlink(t, fs, "link.txt", "target.txt")
+}
