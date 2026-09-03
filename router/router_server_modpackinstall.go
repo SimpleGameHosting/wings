@@ -7,7 +7,6 @@ import (
 
 	"github.com/pterodactyl/wings/internal/modpackinstall"
 	"github.com/pterodactyl/wings/router/middleware"
-	"github.com/pterodactyl/wings/server"
 )
 
 // postServerModpackInstall admits one native modpack or version install job
@@ -16,28 +15,22 @@ import (
 // of install capacity, is claimed synchronously here before the 202 is
 // written, so a duplicate, a racing request, or an over-quota attempt is
 // always answered honestly instead of failing invisibly inside a background
-// goroutine later on. The claim order below is spec-mandated: an exact
-// repeat of an attempt this server has already admitted, whether it is
-// still running or was the last one to finish, is answered first, so a
-// caller retrying a lost 202 is never told the server is busy and never
-// starts the same install twice; only after that is the payload validated,
-// the server's exclusive operation claimed, and finally the node-wide
-// install slot reserved, unwinding the operation claim again if that last
-// step fails.
+// goroutine later on. The order below is validate, admit, reserve: a
+// malformed payload was never admitted and so can never be a repeat, which
+// is why it is rejected first; admission then decides in one critical
+// section whether this is an exact repeat of an attempt this server has
+// already admitted, whether still running or the last to finish, answered
+// again so a caller retrying a lost 202 is never told the server is busy
+// and never starts the same install twice, or a fresh attempt that claims
+// the server's exclusive operation and records its identity together;
+// finally the node-wide install slot is reserved, unwinding that claim
+// again if this last step fails.
 func postServerModpackInstall(c *gin.Context) {
 	s := middleware.ExtractServer(c)
 	manager := middleware.ExtractManager(c)
 
 	var req modpackinstall.Request
 	if err := c.BindJSON(&req); err != nil {
-		return
-	}
-
-	// An exact repeat of the install currently running, or of the one that
-	// finished most recently, means our earlier 202 was lost in transit
-	// somewhere; answer it again without starting a second job...
-	if s.IsRecentModpackInstallID(req.InstallID) {
-		c.JSON(http.StatusAccepted, gin.H{"install_id": req.InstallID})
 		return
 	}
 
@@ -49,11 +42,16 @@ func postServerModpackInstall(c *gin.Context) {
 		return
 	}
 
-	// Claim exclusive ownership of the server before touching the node-wide
-	// slot, so a server already busy with a transfer, restore, power
-	// action, or another install is rejected without taking a slot away
-	// from a request that could actually proceed...
-	if err := s.TryBeginOperation(server.OperationInstall); err != nil {
+	// Admission is one critical section: a repeat of an attempt this server
+	// already admitted is answered again without a second job, otherwise
+	// the exclusive operation is claimed and the id recorded together, so
+	// two simultaneous retries can never disagree...
+	repeat, err := s.AdmitModpackInstall(req.InstallID)
+	if repeat {
+		c.JSON(http.StatusAccepted, gin.H{"install_id": req.InstallID})
+		return
+	}
+	if err != nil {
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
 			"error":      operationConflictMessage(s.CurrentOperation()),
 			"request_id": c.GetString("request_id"),
@@ -63,22 +61,18 @@ func postServerModpackInstall(c *gin.Context) {
 
 	// The operation claim above must never outlive a failed slot
 	// reservation, since nothing else on this request path would ever
-	// release it otherwise...
+	// release it otherwise. Releasing through the fence keeps the id and
+	// the reservation consistent, and deliberately does not remember the
+	// id as finished, since nothing ran...
 	release, ok := manager.TryReserveModpackInstallSlot()
 	if !ok {
-		s.EndOperation(server.OperationInstall)
+		s.AbandonModpackInstallClaim(req.InstallID)
 		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
 			"error":      "this node is running its maximum number of concurrent installs, try again shortly",
 			"request_id": c.GetString("request_id"),
 		})
 		return
 	}
-
-	// Record the attempt's identity while both claims are held and before
-	// the job is spawned, so a retry arriving the instant after this
-	// response is written already sees it as a repeat rather than being
-	// admitted as a second job...
-	s.SetActiveModpackInstallID(req.InstallID)
 
 	go s.RunModpackInstall(req, release)
 

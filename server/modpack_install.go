@@ -107,59 +107,40 @@ func (m *Manager) TryReserveModpackInstallSlot() (func(), bool) {
 	}, true
 }
 
+// AdmitModpackInstall admits one native install attempt in a single
+// critical section: a repeat of the running or most recently finished id
+// reports repeat true without claiming, otherwise the install reservation
+// is claimed and the id recorded together, or ErrOperationInProgress is
+// returned when another operation holds the server.
+func (s *Server) AdmitModpackInstall(id string) (bool, error) {
+	return s.admitFenced(&s.operation.install, OperationInstall, id)
+}
+
 // ActiveModpackInstallID reports the install_id of the native install
-// currently running against this server, or the empty string when none is
-// running.
+// currently running against this server, or the empty string.
 func (s *Server) ActiveModpackInstallID() string {
 	s.operation.mu.Lock()
 	defer s.operation.mu.Unlock()
-	return s.operation.activeInstallID
+	return s.operation.install.active
 }
 
-// SetActiveModpackInstallID records the install_id of the attempt this
-// server has just admitted. The install router calls it after it has both
-// claimed the install operation and reserved a node slot, and before it
-// spawns the job, so the identity is already visible to a concurrent
-// retry by the time the 202 is written rather than only once the job
-// goroutine happens to be scheduled.
-func (s *Server) SetActiveModpackInstallID(id string) {
+// AbandonModpackInstallClaim releases a claim whose job never started (the
+// node slot was full) without remembering the id as finished, so the
+// panel's retry of that id is admitted as a fresh attempt.
+func (s *Server) AbandonModpackInstallClaim(installID string) {
 	s.operation.mu.Lock()
 	defer s.operation.mu.Unlock()
-	s.operation.activeInstallID = id
-}
 
-// IsRecentModpackInstallID reports whether id names either the install
-// currently running against this server or the one that finished most
-// recently. Both answer the panel's question the same way: this attempt
-// has already been admitted once, so a repeat of it is a retry of a lost
-// 202 and must never start a second job. Remembering the finished id
-// matters because a fast install can be over before the panel's retry
-// arrives, and re-running it would wipe a server the user has since
-// started.
-func (s *Server) IsRecentModpackInstallID(id string) bool {
-	if id == "" {
-		return false
+	if s.operation.install.active == installID {
+		s.operation.install.active = ""
 	}
-
-	s.operation.mu.Lock()
-	defer s.operation.mu.Unlock()
-
-	return id == s.operation.activeInstallID || id == s.operation.lastFinishedInstallID
+	s.endOperationLocked(OperationInstall)
 }
 
-// releaseModpackInstallClaim retires a finished attempt: it remembers the
-// id as the last one to finish, clears the active id, and releases the
-// install reservation, all inside one hold of the reservation mutex. Doing
-// the three together is what stops an observer from ever seeing a free
-// reservation while an id is still active, or an active reservation whose
-// id has already been cleared.
+// releaseModpackInstallClaim retires a finished attempt together with the
+// install reservation.
 func (s *Server) releaseModpackInstallClaim(installID string) {
-	s.operation.mu.Lock()
-	defer s.operation.mu.Unlock()
-
-	s.operation.lastFinishedInstallID = installID
-	s.operation.activeInstallID = ""
-	s.endOperationLocked(OperationInstall)
+	s.releaseFenced(&s.operation.install, OperationInstall, installID)
 }
 
 // RunModpackInstall executes one native modpack/version install attempt

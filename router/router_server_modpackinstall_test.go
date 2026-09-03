@@ -307,52 +307,37 @@ func TestModpackInstallAcceptsValidRequestAndTracksLifecycle(t *testing.T) {
 	waitForActiveModpackInstallID(t, s, "", 5*time.Second)
 }
 
-// TestModpackInstallRepeatOfActiveInstallReturns202WithoutStartingAnother
-// covers case 3: repeating the exact install_id that is already running
-// must be answered with the same 202 and must not consume a second slot.
-// The repeat fires with no poll or sleep after the first 202, which is the
-// shape a panel retry of a lost response actually takes: the identity has
-// to be observable the instant the first response is written, not once the
-// job goroutine happens to get scheduled.
-func TestModpackInstallRepeatOfActiveInstallReturns202WithoutStartingAnother(t *testing.T) {
+// TestModpackInstallConcurrentDuplicatesBothGet202 fires the same install
+// id from two goroutines at once; admission is one critical section, so
+// both must be told 202 and exactly one job may run.
+func TestModpackInstallConcurrentDuplicatesBothGet202(t *testing.T) {
 	fixture := newModpackInstallFixture(t, 2)
 	s := fixture.newServer(t, testModpackInstallServerID)
 	archive := newModpackArchiveServer(t)
-
 	installID := uuid.NewString()
-	body := validModpackInstallBody(installID, archive.URL)
 
-	first, firstRecorder := fixture.newContext(t, s, body)
-	postServerModpackInstall(first)
-	if firstRecorder.Code != http.StatusAccepted {
-		t.Fatalf("expected the first attempt to return 202, got %d body %s", firstRecorder.Code, firstRecorder.Body.String())
+	codes := make(chan int, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			c, recorder := fixture.newContext(t, s, validModpackInstallBody(installID, archive.URL))
+			postServerModpackInstall(c)
+			codes <- recorder.Code
+		}()
 	}
-	if id := s.ActiveModpackInstallID(); id != installID {
-		t.Fatalf("expected the install id to be observable the instant the 202 is written, got %q", id)
+	first, second := <-codes, <-codes
+	if first != http.StatusAccepted || second != http.StatusAccepted {
+		t.Fatalf("both duplicates must get 202, got %d and %d", first, second)
 	}
 
-	second, secondRecorder := fixture.newContext(t, s, body)
-	postServerModpackInstall(second)
-	if secondRecorder.Code != http.StatusAccepted {
-		t.Fatalf("expected a repeat of the active install id to return 202, got %d body %s", secondRecorder.Code, secondRecorder.Body.String())
-	}
-	var result struct {
-		InstallID string `json:"install_id"`
-	}
-	decodeJSONBody(t, secondRecorder, &result)
+	result := waitForModpackInstallResult(t, fixture, 5*time.Second)
 	if result.InstallID != installID {
-		t.Fatalf("expected the repeat response install_id %q, got %q", installID, result.InstallID)
+		t.Fatalf("result for %q, want %q", result.InstallID, installID)
 	}
-
-	// If the repeat had wrongly started a second job, it would have taken
-	// the node's other slot; confirm it is still free...
-	release, ok := fixture.manager.TryReserveModpackInstallSlot()
-	if !ok {
-		t.Fatal("expected the repeat request to not have consumed a second install slot")
+	select {
+	case extra := <-fixture.results:
+		t.Fatalf("a second job ran for the duplicate: %+v", extra)
+	case <-time.After(200 * time.Millisecond):
 	}
-	release()
-
-	waitForActiveModpackInstallID(t, s, "", 5*time.Second)
 }
 
 // TestModpackInstallRepeatOfFinishedInstallReturns202WithoutStartingAnother

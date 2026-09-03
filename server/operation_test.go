@@ -139,3 +139,80 @@ func TestOperationReservation(t *testing.T) {
 		s.EndOperation(OperationInstall)
 	})
 }
+
+// TestAdmitModpackInstallIsOneCriticalSection fires many concurrent admits
+// of the same id at an idle server and requires exactly one of them to
+// claim while every other is answered as a repeat, never as a conflict.
+func TestAdmitModpackInstallIsOneCriticalSection(t *testing.T) {
+	s := newOperationTestServer(t)
+	const id = "11111111-1111-1111-1111-111111111111"
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	claimed, repeats, conflicts := 0, 0, 0
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			repeat, err := s.AdmitModpackInstall(id)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err != nil:
+				conflicts++
+			case repeat:
+				repeats++
+			default:
+				claimed++
+			}
+		}()
+	}
+	wg.Wait()
+
+	if claimed != 1 || repeats != 31 || conflicts != 0 {
+		t.Fatalf("claimed=%d repeats=%d conflicts=%d, want 1/31/0", claimed, repeats, conflicts)
+	}
+	if s.ActiveModpackInstallID() != id {
+		t.Fatalf("active id = %q, want %q", s.ActiveModpackInstallID(), id)
+	}
+
+	// A different id while the first is running is a conflict, and after the
+	// claim is released the first id is still a repeat but a new one claims...
+	if _, err := s.AdmitModpackInstall("22222222-2222-2222-2222-222222222222"); err == nil {
+		t.Fatal("expected a different id to conflict while one is active")
+	}
+	s.releaseModpackInstallClaim(id)
+	if repeat, err := s.AdmitModpackInstall(id); err != nil || !repeat {
+		t.Fatalf("finished id must still be a repeat, got repeat=%v err=%v", repeat, err)
+	}
+	if repeat, err := s.AdmitModpackInstall("22222222-2222-2222-2222-222222222222"); err != nil || repeat {
+		t.Fatalf("new id must claim after release, got repeat=%v err=%v", repeat, err)
+	}
+}
+
+// TestAdmitSetupApplyMirrorsInstallAdmission proves the setup fence has the
+// same semantics and shares the reservation with install.
+func TestAdmitSetupApplyMirrorsInstallAdmission(t *testing.T) {
+	s := newOperationTestServer(t)
+	const id = "33333333-3333-3333-3333-333333333333"
+
+	if repeat, err := s.AdmitSetupApply(id); err != nil || repeat {
+		t.Fatalf("first admit must claim, got repeat=%v err=%v", repeat, err)
+	}
+	if s.ActiveSetupApplyID() != id {
+		t.Fatalf("active setup id = %q", s.ActiveSetupApplyID())
+	}
+	if _, err := s.AdmitModpackInstall("44444444-4444-4444-4444-444444444444"); err == nil {
+		t.Fatal("an install must conflict while a setup apply holds the server")
+	}
+	if repeat, err := s.AdmitSetupApply(id); err != nil || !repeat {
+		t.Fatalf("same id must be a repeat, got repeat=%v err=%v", repeat, err)
+	}
+	s.releaseSetupApplyClaim(id)
+	if s.ActiveSetupApplyID() != "" || s.CurrentOperation() != "" {
+		t.Fatal("release must clear the id and the reservation together")
+	}
+	if repeat, err := s.AdmitSetupApply(id); err != nil || !repeat {
+		t.Fatalf("finished id must still be a repeat, got repeat=%v err=%v", repeat, err)
+	}
+}

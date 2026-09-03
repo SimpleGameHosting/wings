@@ -50,14 +50,66 @@ type operationLock struct {
 	mu      sync.Mutex
 	current Operation
 
-	// activeInstallID and lastFinishedInstallID track the identity of the
-	// native modpack/version installs this server has admitted, so a
-	// retried request can be told apart from a genuinely new one. They
-	// live under this same mutex, rather than one of their own, so the
-	// identity and the reservation are always claimed and released as a
-	// single indivisible step.
-	activeInstallID       string
-	lastFinishedInstallID string
+	// install and setup hold the identity of the fenced job of each kind
+	// this server has admitted, so a retried request can be told apart
+	// from a genuinely new one. They live under this same mutex, rather
+	// than one of their own, so the identity and the reservation are
+	// always claimed and released as a single indivisible step.
+	install fencedIdentity
+	setup   fencedIdentity
+}
+
+// fencedIdentity remembers the running attempt of one fenced job kind and
+// the one that finished most recently. Both answer the panel's question
+// the same way: this attempt has already been admitted once, so a repeat
+// of it is a retry of a lost 202 and must never start a second job.
+type fencedIdentity struct {
+	active       string
+	lastFinished string
+}
+
+// isRecent reports whether id names the running or the last finished attempt.
+func (f *fencedIdentity) isRecent(id string) bool {
+	return id != "" && (id == f.active || id == f.lastFinished)
+}
+
+// admitFenced is the one critical section every fenced job admits through:
+// a repeat of a recent id is answered without claiming, otherwise the
+// reservation is claimed for kind and the id recorded, in one hold of the
+// mutex. Two simultaneous requests for the same id therefore both learn it
+// is admitted and exactly one job runs. Callers must not hold s.operation.mu.
+//
+// Like TryBeginOperation, it must never be called while the caller already
+// holds the Server's own mutex (s.Lock/s.RLock): mirroring the legacy flag
+// goes through SetInstalling and friends, which acquire that same mutex.
+func (s *Server) admitFenced(identity *fencedIdentity, kind Operation, id string) (bool, error) {
+	s.operation.mu.Lock()
+	defer s.operation.mu.Unlock()
+
+	if identity.isRecent(id) {
+		return true, nil
+	}
+	if s.operation.current != "" {
+		return false, errors.Wrapf(ErrOperationInProgress, "current operation: %s", s.operation.current)
+	}
+
+	s.operation.current = kind
+	s.setLegacyFlag(kind, true)
+	identity.active = id
+
+	return false, nil
+}
+
+// releaseFenced retires a finished attempt: it remembers the id as the last
+// one to finish, clears the active id, and releases the reservation, all
+// inside one hold of the mutex.
+func (s *Server) releaseFenced(identity *fencedIdentity, kind Operation, id string) {
+	s.operation.mu.Lock()
+	defer s.operation.mu.Unlock()
+
+	identity.lastFinished = id
+	identity.active = ""
+	s.endOperationLocked(kind)
 }
 
 // TryBeginOperation atomically claims exclusive ownership of the server for
