@@ -307,3 +307,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Files: `parser/helpers.go`, `parser/helpers_test.go`.
 - Conflict risk on rebase: low; one character plus additive tests.
   Not yet reported upstream.
+
+### router: redact pull URLs in download logs
+
+- What: the remote-pull start line logs `u.Redacted()` instead of `u.String()` so `user:pass@` credentials in pull URLs never reach node logs.
+- Why: the URL including credentials was written to the server log on every remote pull.
+- Files: `router/router_server_files.go`.
+- Conflict risk on rebase: low; one token.

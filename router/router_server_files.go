@@ -326,7 +326,7 @@ func postServerPullRemoteFile(c *gin.Context) {
 	})
 
 	download := func() error {
-		s.Log().WithField("download_id", dl.Identifier).WithField("url", u.String()).Info("starting pull of remote file to disk")
+		s.Log().WithField("download_id", dl.Identifier).WithField("url", u.Redacted()).Info("starting pull of remote file to disk")
 		if err := dl.Execute(); err != nil {
 			if !downloader.IsDownloadError(err) {
 				s.Log().WithField("download_id", dl.Identifier).WithField("error", err).Error("failed to pull remote file")
