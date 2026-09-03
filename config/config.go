@@ -326,7 +326,7 @@ type Backups struct {
 	// "best_speed" -> uses gzip level 1 for fast speed
 	// "best_compression" -> uses gzip level 9 for minimal disk space useage
 	//
-	// Defaults to "best_speed" (level 1)
+	// Defaults to "best_compression" (level 9), an SGH change from upstream's "best_speed".
 	CompressionLevel string `default:"best_compression" yaml:"compression_level"`
 
 	// RestoreHostAllowlist allows backup restore downloads to connect to otherwise blocked

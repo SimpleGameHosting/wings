@@ -314,3 +314,10 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: the URL including credentials was written to the server log on every remote pull.
 - Files: `router/router_server_files.go`.
 - Conflict risk on rebase: low; one token.
+
+### config: correct the backup compression default comment
+
+- What: the `CompressionLevel` comment now states the `best_compression` default set by the SGH compression patch instead of the upstream `best_speed` text.
+- Why: the comment contradicted the struct tag after the SGH default change.
+- Files: `config/config.go`.
+- Conflict risk on rebase: low; comment only, adjacent to the existing one-value SGH default.
