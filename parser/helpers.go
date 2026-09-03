@@ -189,7 +189,7 @@ func (cfr *ConfigurationFileReplacement) SetAtPathway(c *gabs.Container, path st
 	if strings.HasPrefix(cfr.IfValue, "regex:") {
 		// Doing a regex replacement requires an existing value.
 		// TODO: Do we try passing an empty string to the regex?
-		if c.ExistsP(path) {
+		if !c.ExistsP(path) {
 			return gabs.ErrNotFound
 		}
 

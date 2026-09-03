@@ -295,3 +295,15 @@ Every SGH modification MUST be registered here before its work is considered com
 - Files: `server/filesystem/path.go`, `server/filesystem/path_test.go`.
 - Conflict risk on rebase: low; one hunk plus an additive goblin block in the existing test file.
   Not yet reported upstream.
+
+### parser: apply regex replacements to existing values
+
+- What: negates the inverted existence check in `SetAtPathway` so `if_value: regex:` requires the key to exist instead of requiring it to be missing.
+- Why: the inverted check returned `ErrNotFound` for every existing key, which the caller silently skips, so a regex replacement never applied to the value it was written for.
+  A missing key fell through instead and ran the regex against the container's `null` rendering, which a permissive expression could turn into a fabricated key.
+- Rollout: this is the first time `if_value: regex:` has ever applied, so it is a behaviour change for any egg that uses it.
+  The seeded BungeeCord egg rewrites `localhost:PORT` backend addresses in `config.yml` to the Docker interface address on the next boot; the rewrite is idempotent and is what upstream intended, but Wings does not log when a replacement applies.
+  Canary on a node that hosts proxy servers first, and audit custom eggs with `SELECT id, name FROM eggs WHERE config_files LIKE '%regex:%'` before rolling the fleet.
+- Files: `parser/helpers.go`, `parser/helpers_test.go`.
+- Conflict risk on rebase: low; one character plus additive tests.
+  Not yet reported upstream.
