@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -58,20 +59,32 @@ type setupApplyTestEnvironment struct {
 	started chan struct{}
 	state   string
 	config  *environment.Configuration
+
+	// stop replaces the default stop behavior when set, so a case can make
+	// the stop step fail, stall until its deadline, or leave the server
+	// running the way a racing user start would.
+	stop func(ctx context.Context) error
+
+	// startErr is what Start reports back after recording that it was
+	// asked, so a case can fail the start step itself.
+	startErr error
 }
 
 func (e *setupApplyTestEnvironment) State() string { return e.state }
 
 // WaitForStop parks the fixture in the offline state, the same observable
 // outcome a real environment reaches once the process is gone.
-func (e *setupApplyTestEnvironment) WaitForStop(context.Context, time.Duration, bool) error {
+func (e *setupApplyTestEnvironment) WaitForStop(ctx context.Context, _ time.Duration, _ bool) error {
+	if e.stop != nil {
+		return e.stop(ctx)
+	}
 	e.state = environment.ProcessOfflineState
 	return nil
 }
 
 func (e *setupApplyTestEnvironment) Start(context.Context) error {
 	e.started <- struct{}{}
-	return nil
+	return e.startErr
 }
 
 func (e *setupApplyTestEnvironment) OnBeforeStart(context.Context) error { return nil }
@@ -197,5 +210,262 @@ func TestRunSetupApplyEmptyRequestOnlyRestarts(t *testing.T) {
 		if _, err := s.Filesystem().UnixFS().Lstat(name); err == nil {
 			t.Fatalf("%s must not be written by an empty request", name)
 		}
+	}
+}
+
+// setupApplyStatusRecorder subscribes to the server's event bus and returns
+// a collector for every "setup apply status" event the job published, so a
+// case can assert on the ordered contract the panel consumes rather than
+// only on the final callback. Console output shares the same bus, so every
+// other topic is skipped.
+func setupApplyStatusRecorder(t *testing.T, s *Server) func() []SetupApplyStatus {
+	t.Helper()
+
+	sink := make(chan []byte, 64)
+	s.Events().On(sink)
+	t.Cleanup(func() { s.Events().Off(sink) })
+
+	return func() []SetupApplyStatus {
+		var collected []SetupApplyStatus
+		for {
+			select {
+			case raw := <-sink:
+				var event events.Event
+				if err := events.DecodeTo(raw, &event); err != nil {
+					t.Fatalf("undecodable event: %v", err)
+				}
+				if event.Topic != SetupApplyStatusEvent {
+					continue
+				}
+
+				// The bus carries the payload as decoded JSON, so it goes
+				// back through the encoder to reach the typed shape the
+				// panel actually parses...
+				encoded, err := json.Marshal(event.Data)
+				if err != nil {
+					t.Fatalf("unencodable status payload: %v", err)
+				}
+				var status SetupApplyStatus
+				if err := json.Unmarshal(encoded, &status); err != nil {
+					t.Fatalf("undecodable status payload: %v", err)
+				}
+				collected = append(collected, status)
+			default:
+				return collected
+			}
+		}
+	}
+}
+
+// setupApplyStates flattens recorded events to their states so an ordering
+// assertion reads as the sequence the panel sees.
+func setupApplyStates(recorded []SetupApplyStatus) []string {
+	states := make([]string, 0, len(recorded))
+	for _, status := range recorded {
+		states = append(states, status.State)
+	}
+	return states
+}
+
+// TestRunSetupApplyTreatsAnAlreadyRunningServerAsSuccess covers the race the
+// job deliberately allows: it releases the reservation before starting, so a
+// user's own start can win it and leave the server already running by the
+// time the start step looks. HandlePowerAction reports ErrIsRunning for that,
+// but the end state the job asked for was reached, so the attempt succeeds.
+func TestRunSetupApplyTreatsAnAlreadyRunningServerAsSuccess(t *testing.T) {
+	s, client, env := newSetupApplyServer(t)
+	env.state = environment.ProcessRunningState
+	env.stop = func(context.Context) error { return nil }
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	result := <-client.results
+	if !result.Successful || result.ErrorCode != "" {
+		t.Fatalf("an already running server must be a success: %+v", result)
+	}
+	select {
+	case <-env.started:
+		t.Fatal("the job must not start a server that is already running")
+	default:
+	}
+	if s.CurrentOperation() != "" {
+		t.Fatal("reservation still held after the job finished")
+	}
+}
+
+// TestRunSetupApplyPublishesTheOrderedStatusEvents pins the websocket
+// contract for a successful attempt: one event per pipeline step, in order,
+// followed by the terminal completion.
+func TestRunSetupApplyPublishesTheOrderedStatusEvents(t *testing.T) {
+	s, client, _ := newSetupApplyServer(t)
+	recorded := setupApplyStatusRecorder(t, s)
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	if result := <-client.results; !result.Successful {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	states := setupApplyStates(recorded())
+	want := []string{"stopping", "applying", "starting", "completed"}
+	if len(states) != len(want) {
+		t.Fatalf("states = %v, want %v", states, want)
+	}
+	for i, state := range want {
+		if states[i] != state {
+			t.Fatalf("states = %v, want %v", states, want)
+		}
+	}
+}
+
+// TestRunSetupApplyPublishesAFailedTerminalEvent proves the terminal event
+// of a failed attempt carries the same stable code and message the panel
+// callback does, so a websocket consumer never has to wait for the panel to
+// learn why the attempt failed.
+func TestRunSetupApplyPublishesAFailedTerminalEvent(t *testing.T) {
+	s, client, _ := newSetupApplyServer(t)
+	if err := s.Filesystem().Write(setupapply.OpsFileName, strings.NewReader("{broken"), 7, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	recorded := setupApplyStatusRecorder(t, s)
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Operators: []setupapply.Operator{{UUID: uuid.NewString(), Name: "Kane", Level: 4}}}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	<-client.results
+	published := recorded()
+	if len(published) == 0 {
+		t.Fatal("no status events were published")
+	}
+	terminal := published[len(published)-1]
+	if terminal.State != "failed" || terminal.ErrorCode != SetupApplyErrorApplyFailed || terminal.Error == "" {
+		t.Fatalf("unexpected terminal event: %+v", terminal)
+	}
+	if terminal.SetupID != req.SetupID {
+		t.Fatalf("terminal event setup_id = %q, want %q", terminal.SetupID, req.SetupID)
+	}
+}
+
+// TestRunSetupApplyReportsStopFailed proves a server that refuses to stop
+// ends the attempt before anything is written or started.
+func TestRunSetupApplyReportsStopFailed(t *testing.T) {
+	s, client, env := newSetupApplyServer(t)
+	env.state = environment.ProcessRunningState
+	env.stop = func(context.Context) error { return errors.New("setup apply test fixture: nothing to stop") }
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	result := <-client.results
+	if result.Successful || result.ErrorCode != SetupApplyErrorStopFailed {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	select {
+	case <-env.started:
+		t.Fatal("a failed stop must not start the server")
+	default:
+	}
+	if _, err := s.Filesystem().UnixFS().Lstat(setupapply.EulaFileName); err == nil {
+		t.Fatal("a failed stop must not write any game file")
+	}
+}
+
+// TestRunSetupApplyReportsStartFailed proves an environment that refuses to
+// boot is reported under the start step's own code, distinctly from the
+// already-running case above.
+func TestRunSetupApplyReportsStartFailed(t *testing.T) {
+	s, client, env := newSetupApplyServer(t)
+	env.startErr = errors.New("setup apply test fixture: refusing to boot")
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	result := <-client.results
+	if result.Successful || result.ErrorCode != SetupApplyErrorStartFailed {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if s.CurrentOperation() != "" {
+		t.Fatal("reservation still held after a failed start")
+	}
+}
+
+// TestRunSetupApplyReportsTimeout proves the attempt's own deadline, rather
+// than the step it happened to expire in, decides the reported code. The
+// job's bound is overridden here because its configured granularity is
+// whole minutes, which no test can wait out.
+func TestRunSetupApplyReportsTimeout(t *testing.T) {
+	s, client, env := newSetupApplyServer(t)
+
+	previous := setupApplyTimeout
+	setupApplyTimeout = func() time.Duration { return 20 * time.Millisecond }
+	t.Cleanup(func() { setupApplyTimeout = previous })
+
+	env.state = environment.ProcessRunningState
+	env.stop = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	result := <-client.results
+	if result.Successful || result.ErrorCode != SetupApplyErrorTimeout {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+}
+
+// TestRunSetupApplyReportsInternalErrorWhenCancelled proves a server torn
+// down mid-attempt ends the job promptly under the internal code rather
+// than being mistaken for a deadline that expired.
+func TestRunSetupApplyReportsInternalErrorWhenCancelled(t *testing.T) {
+	s, client, env := newSetupApplyServer(t)
+	env.state = environment.ProcessRunningState
+	env.stop = func(ctx context.Context) error {
+		s.CtxCancel()
+		<-ctx.Done()
+		return nil
+	}
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	result := <-client.results
+	if result.Successful || result.ErrorCode != SetupApplyErrorInternal {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	select {
+	case <-env.started:
+		t.Fatal("a cancelled job must not start the server")
+	default:
 	}
 }

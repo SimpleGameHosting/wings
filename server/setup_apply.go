@@ -45,6 +45,14 @@ const setupApplyStopGrace = 60 * time.Second
 // lock, matching what the power route allows a client to ask for.
 const setupApplyStartWait = 30
 
+// setupApplyTimeout resolves the deadline one attempt runs under. It reads
+// the configured value on every call rather than caching it, and is a
+// variable rather than a plain expression only so a test can shorten a
+// bound whose configured granularity is whole minutes.
+var setupApplyTimeout = func() time.Duration {
+	return time.Duration(config.Get().System.SetupApply.TimeoutMinutes) * time.Minute
+}
+
 // AdmitSetupApply admits one native setup apply attempt in a single
 // critical section: a repeat of the running or most recently finished id
 // reports repeat true without claiming, otherwise the install reservation
@@ -98,8 +106,7 @@ func (s *Server) RunSetupApply(req setupapply.Request) {
 		s.finishSetupApply(req, applyErr, start)
 	}()
 
-	timeout := time.Duration(config.Get().System.SetupApply.TimeoutMinutes) * time.Minute
-	ctx, cancel := context.WithTimeout(s.Context(), timeout)
+	ctx, cancel := context.WithTimeout(s.Context(), setupApplyTimeout())
 	defer cancel()
 
 	applyErr = s.runSetupApplyPipeline(ctx, req, release)
@@ -157,6 +164,13 @@ func (s *Server) runSetupApplyPipeline(ctx context.Context, req setupapply.Reque
 	status("starting")
 	release()
 	if err := s.HandlePowerAction(PowerActionStart, setupApplyStartWait); err != nil {
+		// A user power action can win the reservation in the moment between
+		// the release above and this call, leaving the server already
+		// booting by the time the start step looks. That is the end state
+		// this job was asking for, so it is a success, not a failure...
+		if errors.Is(err, ErrIsRunning) {
+			return nil
+		}
 		return fail(SetupApplyErrorStartFailed, errors.New("setupapply: failed to start the server"))
 	}
 	return nil
