@@ -30,6 +30,8 @@ const (
 	maximumUploadMetadataFileSize           = 64 * 1024
 )
 
+// The stable errors resumable upload requests can fail with; the router maps
+// each of them to an HTTP status.
 var (
 	ErrUploadConflict            = errors.New("an active upload already targets this file")
 	ErrUploadChecksumMismatch    = errors.New("uploaded content does not match its SHA-256 fingerprint")

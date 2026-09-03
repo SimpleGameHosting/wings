@@ -14,7 +14,8 @@ Every SGH modification MUST be registered here before its work is considered com
 2. Pick the new base: the newest upstream release tag, or a pinned `develop` commit when tags lag on security updates.
 3. `git rebase --onto <new-base> <old-base> sgh`
 4. Resolve conflicts patch by patch; each entry below lists its touched files.
-5. Run `gofmt -l . && go vet ./... && CGO_ENABLED=1 go test -race ./... && CGO_ENABLED=0 go build ./...` on Linux or in a Go container because Wings does not build natively on macOS.
+5. Run `gofmt -l . && go vet ./... && make lint && CGO_ENABLED=1 go test -race ./... && CGO_ENABLED=0 go build ./...` on Linux or in a Go container because Wings does not build natively on macOS.
+   `make lint` reads the Base line above, so it needs no update of its own after a rebase.
    The race detector needs cgo, while the build uses `CGO_ENABLED=0` to match published binaries.
 6. Update the Base line above, tag `v<upstream>-sgh.<n+1>`, push with `--force-with-lease`.
 7. Canary one node, then roll the fleet via `playbooks/pterodactyl/wings_update`.
@@ -141,7 +142,7 @@ Every SGH modification MUST be registered here before its work is considered com
   Existing multipart uploads remain unchanged for Panels that have not enabled the resumable client.
 - Why: large browser uploads should survive interrupted requests and expiring signed URLs without exposing incomplete worlds, archives, or server binaries at their final destination.
   A dedicated session prevents an existing same-name file from being misidentified as the beginning of a different upload.
-- Files: `.gitignore`, `cmd/root.go`, `config/config.go`, `internal/ufs/fs_unix.go`, `router/middleware/middleware.go`, `router/middleware/request_error.go`, `router/middleware/request_error_test.go`, `router/router.go`, `router/router_server.go`, `router/router_server_files.go`, `router/router_server_upload.go`, `router/router_server_upload_test.go`, `router/tokens/upload.go`, `server/filesystem/filesystem.go`, `server/manager.go`, `server/upload_limits.go`, `server/upload_limits_test.go`, `server/uploads.go`.
+- Files: `.gitignore`, `cmd/root.go`, `config/config.go`, `internal/ufs/fs_unix.go`, `router/middleware/middleware.go`, `router/middleware/request_error.go`, `router/middleware/request_error_test.go`, `router/router.go`, `router/router_server.go`, `router/router_server_files.go`, `router/router_server_upload.go`, `router/router_server_upload_test.go`, `router/tokens/upload.go`, `server/filesystem/filesystem.go`, `server/manager.go`, `server/upload_limits.go`, `server/upload_limits_test.go`, `server/uploads.go`, `server/uploads_test.go`.
 - Conflict risk on rebase: medium.
   The public upload route and filesystem rename implementation are upstream-owned surfaces, while the session manager and protocol handler are additive.
   Recheck signed-token semantics, CORS headers, quota accounting, and atomic replacement behavior after every upstream rebase.
@@ -265,6 +266,18 @@ Every SGH modification MUST be registered here before its work is considered com
   That wait is bounded only by the attempt's own deadline, so a stop that never settles is reported as `timeout`. `ErrIsRunning` from the start step counts as success only when the environment is `running` or `starting` at that moment; any other state is `start_failed`.
   Apply, stop, and start errors are logged in full on the node and reported to the panel as fixed per-step messages, since the reported message reaches every websocket viewer and the raw filesystem errors carry host paths.
   `admitFenced` refuses an unknown operation kind and an empty id before claiming anything, because the empty id is what `releaseFenced` treats as owning nothing and could never give the reservation back.
+  Both fenced finishers report their outcome to the panel through `fencedResultReportContext`, a 30-second deadline of its own that is deliberately detached from the attempt's context, since on the timeout and cancellation paths that context is already done when the report is sent and those are the outcomes the panel most needs to hear.
 - Why: replaces the panel's five-stage launch chain, which drove stop, four file writes, and start through generic endpoints with polling and an outbox, with one daemon-side job that pushes progress and outcome. Design in the panel repo at `docs/superpowers/specs/2026-09-03-native-setup-launch-design.md`.
 - Files: `config/config.go`, `config/config_test.go`, `internal/setupapply/files.go`, `internal/setupapply/files_test.go`, `internal/setupapply/helpers_test.go`, `internal/setupapply/request.go`, `internal/setupapply/request_test.go`, `remote/http.go`, `remote/servers.go`, `remote/servers_test.go`, `remote/types.go`, `router/router.go`, `router/router_server_backup_test.go`, `router/router_server_modpackinstall.go`, `router/router_server_modpackinstall_test.go`, `router/router_server_setupapply.go`, `router/router_server_setupapply_test.go`, `server/events.go`, `server/modpack_install.go`, `server/operation.go`, `server/operation_test.go`, `server/setup_apply.go`, `server/setup_apply_test.go`.
 - Conflict risk on rebase: low for the new package and route; medium for `server/operation.go`, which the native install patch already carries. Recheck `admitFenced` and `releaseFenced` against both routers after each rebase.
+
+### ci: lint the SGH patch series with golangci-lint
+
+- What: adds `.golangci.yml` (errcheck, errorlint, govet, ineffassign, revive's exported-doc rule, staticcheck, unused, gofmt) and a `make lint` target that runs golangci-lint with `--new-from-rev` set to the upstream base commit parsed from the Base line at the top of this file.
+  The push workflow checks out full history, installs golangci-lint v2.13.2 through the pinned action, and runs `make lint` on the amd64 leg.
+- Why: the fork carries a patch series, not an owned codebase, so a linter has to judge only the lines SGH added or changed; linting upstream code would either fail permanently or force refactors that turn every rebase into a conflict pile.
+  Deriving the base from this file keeps one source of truth, so the rebase runbook's step 6 needs no extra edit.
+  The first run flagged nine findings, all in fork code: eight exported blocks without doc comments, and the deprecated `client.IsErrNotFound` in `environment/docker/power.go`.
+  That helper was swapped for `cerrdefs.IsNotFound` at all six call sites in the file, five of which are upstream lines, because mixing both spellings in one file reads worse than five one-line touches; `github.com/containerd/errdefs` became a direct dependency as a result.
+- Files: `.golangci.yml`, `Makefile`, `.github/workflows/push.yaml`, `environment/docker/power.go`, `go.mod`, `internal/modpackinstall/request.go`, `internal/setupapply/files.go`, `server/operation.go`, `server/upload_limits.go`, `server/uploads.go`.
+- Conflict risk on rebase: low for the lint setup, since upstream has no lint configuration and rarely touches the Makefile; low-medium for `power.go`, where each `IsNotFound` line conflicts trivially if upstream edits it.

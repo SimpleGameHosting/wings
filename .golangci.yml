@@ -1,0 +1,29 @@
+# Lints only the SGH patch series. `make lint` passes --new-from-rev with the
+# upstream base recorded in SGH-PATCHES.md, so findings are reported for lines
+# the fork added or changed and upstream code never has to be touched to stay
+# clean. Keep the linter set small and about defects, not taste.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - errorlint
+    - govet
+    - ineffassign
+    - revive
+    - staticcheck
+    - unused
+  settings:
+    revive:
+      rules:
+        # Every exported identifier the fork adds carries a doc comment.
+        - name: exported
+  exclusions:
+    generated: lax
+    presets:
+      - std-error-handling
+
+formatters:
+  enable:
+    - gofmt

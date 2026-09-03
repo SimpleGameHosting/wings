@@ -11,15 +11,20 @@ import (
 	"github.com/google/uuid"
 )
 
+// Kind names what an install request delivers: a whole modpack, or a single
+// server version of one loader.
 type Kind string
 
+// The two install kinds the panel can request.
 const (
 	KindModpack Kind = "modpack"
 	KindVersion Kind = "version"
 )
 
+// VersionType names the loader or server flavour a version install targets.
 type VersionType string
 
+// The version types the panel can request; anything else is refused at validation.
 const (
 	VersionVanilla  VersionType = "vanilla"
 	VersionSnapshot VersionType = "snapshot"

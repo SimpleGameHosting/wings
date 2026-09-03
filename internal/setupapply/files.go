@@ -18,6 +18,7 @@ import (
 // the job timeout.
 const MaxSetupFileBytes = 1 << 20
 
+// The game files a guided setup may write, by their names inside the server root.
 const (
 	EulaFileName       = "eula.txt"
 	OpsFileName        = "ops.json"

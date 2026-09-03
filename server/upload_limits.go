@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+// The errors the request guards return when an upload has to be refused
+// before any bytes are read.
 var (
 	ErrUploadRateLimited = errors.New("resumable upload request rate exceeded")
 	ErrUploadBusy        = errors.New("too many resumable upload transfers are in progress")
