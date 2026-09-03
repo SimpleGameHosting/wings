@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,12 +58,28 @@ type setupApplyTestEnvironment struct {
 	environment.ProcessEnvironment
 
 	started chan struct{}
-	state   string
 	config  *environment.Configuration
 
+	// mu guards every field a case can move underneath a running job, since
+	// a stop that settles late does so from its own goroutine.
+	mu    sync.Mutex
+	state string
+
+	// stateAfterStop, when set, is the state the fixture switches to the
+	// first time it reports itself offline, which is how a case models a
+	// user power action winning the reservation the job releases before
+	// its start step.
+	stateAfterStop string
+
+	// stopGrace and stopTerminate record the arguments the job passed to
+	// WaitForStop, so a case can assert the grace period and the terminate
+	// flag the spec fixes rather than only that a stop happened.
+	stopGrace     time.Duration
+	stopTerminate bool
+
 	// stop replaces the default stop behavior when set, so a case can make
-	// the stop step fail, stall until its deadline, or leave the server
-	// running the way a racing user start would.
+	// the stop step fail, stall until its deadline, or leave the server in
+	// a state that has not settled offline yet.
 	stop func(ctx context.Context) error
 
 	// startErr is what Start reports back after recording that it was
@@ -70,15 +87,41 @@ type setupApplyTestEnvironment struct {
 	startErr error
 }
 
-func (e *setupApplyTestEnvironment) State() string { return e.state }
+// State reports the fixture's current state and, on the first offline
+// report, moves on to stateAfterStop when a case armed one.
+func (e *setupApplyTestEnvironment) State() string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
 
-// WaitForStop parks the fixture in the offline state, the same observable
-// outcome a real environment reaches once the process is gone.
-func (e *setupApplyTestEnvironment) WaitForStop(ctx context.Context, _ time.Duration, _ bool) error {
+	if e.state == environment.ProcessOfflineState && e.stateAfterStop != "" {
+		e.state = e.stateAfterStop
+		e.stateAfterStop = ""
+		return environment.ProcessOfflineState
+	}
+	return e.state
+}
+
+// setState moves the fixture's state, safe to call from a goroutine that
+// is racing a running job.
+func (e *setupApplyTestEnvironment) setState(state string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.state = state
+}
+
+// WaitForStop records what it was asked for and parks the fixture in the
+// offline state, the same observable outcome a real environment reaches
+// once the process is gone.
+func (e *setupApplyTestEnvironment) WaitForStop(ctx context.Context, grace time.Duration, terminate bool) error {
+	e.mu.Lock()
+	e.stopGrace = grace
+	e.stopTerminate = terminate
+	e.mu.Unlock()
+
 	if e.stop != nil {
 		return e.stop(ctx)
 	}
-	e.state = environment.ProcessOfflineState
+	e.setState(environment.ProcessOfflineState)
 	return nil
 }
 
@@ -275,7 +318,10 @@ func setupApplyStates(recorded []SetupApplyStatus) []string {
 func TestRunSetupApplyTreatsAnAlreadyRunningServerAsSuccess(t *testing.T) {
 	s, client, env := newSetupApplyServer(t)
 	env.state = environment.ProcessRunningState
-	env.stop = func(context.Context) error { return nil }
+
+	// The stop settles the server offline, and the racing user start has it
+	// running again by the time the start step consults the state...
+	env.stateAfterStop = environment.ProcessRunningState
 
 	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
 	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
@@ -385,6 +431,12 @@ func TestRunSetupApplyReportsStopFailed(t *testing.T) {
 	if _, err := s.Filesystem().UnixFS().Lstat(setupapply.EulaFileName); err == nil {
 		t.Fatal("a failed stop must not write any game file")
 	}
+	if env.stopGrace != 60*time.Second {
+		t.Fatalf("stop grace = %v, want %v", env.stopGrace, 60*time.Second)
+	}
+	if !env.stopTerminate {
+		t.Fatal("the stop must be allowed to terminate a game that ignores the grace period")
+	}
 }
 
 // TestRunSetupApplyReportsStartFailed proves an environment that refuses to
@@ -467,5 +519,113 @@ func TestRunSetupApplyReportsInternalErrorWhenCancelled(t *testing.T) {
 	case <-env.started:
 		t.Fatal("a cancelled job must not start the server")
 	default:
+	}
+}
+
+// TestRunSetupApplyWaitsForTheStopToSettle covers the shape a real Docker
+// environment has: WaitForStop returns as soon as the container is gone
+// while the transition to the offline state is published a moment later.
+// A start issued in that window is refused as already running, so the job
+// has to wait the state out before it starts.
+func TestRunSetupApplyWaitsForTheStopToSettle(t *testing.T) {
+	s, client, env := newSetupApplyServer(t)
+	env.state = environment.ProcessRunningState
+	env.stop = func(context.Context) error {
+		env.setState(environment.ProcessStoppingState)
+		go func() {
+			time.Sleep(50 * time.Millisecond)
+			env.setState(environment.ProcessOfflineState)
+		}()
+		return nil
+	}
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	result := <-client.results
+	if !result.Successful || result.ErrorCode != "" {
+		t.Fatalf("a stop that settles late must still start the server: %+v", result)
+	}
+	select {
+	case <-env.started:
+	default:
+		t.Fatal("the job never asked the environment to start")
+	}
+}
+
+// TestRunSetupApplyReportsTimeoutWhenTheStopNeverSettles proves the settle
+// wait is bounded by the attempt's own deadline and nothing else: a server
+// stuck in the stopping state ends the attempt as a timeout rather than
+// being reported as a start failure or, worse, as a success that never
+// started anything.
+func TestRunSetupApplyReportsTimeoutWhenTheStopNeverSettles(t *testing.T) {
+	s, client, env := newSetupApplyServer(t)
+
+	previous := setupApplyTimeout
+	setupApplyTimeout = func() time.Duration { return 20 * time.Millisecond }
+	t.Cleanup(func() { setupApplyTimeout = previous })
+
+	env.state = environment.ProcessRunningState
+	env.stop = func(context.Context) error {
+		env.setState(environment.ProcessStoppingState)
+		return nil
+	}
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	result := <-client.results
+	if result.Successful || result.ErrorCode != SetupApplyErrorTimeout {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	select {
+	case <-env.started:
+		t.Fatal("a stop that never settles must not start the server")
+	default:
+	}
+	if _, err := s.Filesystem().UnixFS().Lstat(setupapply.EulaFileName); err == nil {
+		t.Fatal("a stop that never settles must not write any game file")
+	}
+}
+
+// TestRunSetupApplyReportsStartFailedWhenTheServerIsStillStopping proves the
+// narrowed success rule: HandlePowerAction answers ErrIsRunning for every
+// state that is not offline, so the job only treats it as the end state it
+// asked for when the server is genuinely up. A server that fell back into
+// the stopping state is a failed start, not a silent success.
+func TestRunSetupApplyReportsStartFailedWhenTheServerIsStillStopping(t *testing.T) {
+	s, client, env := newSetupApplyServer(t)
+	env.state = environment.ProcessRunningState
+
+	// The stop settles offline, then the server slips back into stopping
+	// before the start step looks at it...
+	env.stateAfterStop = environment.ProcessStoppingState
+
+	req := setupapply.Request{SetupID: uuid.NewString(), Eula: true}
+	if _, err := s.AdmitSetupApply(req.SetupID); err != nil {
+		t.Fatal(err)
+	}
+
+	s.RunSetupApply(req)
+
+	result := <-client.results
+	if result.Successful || result.ErrorCode != SetupApplyErrorStartFailed {
+		t.Fatalf("a server still stopping must not pass as a started one: %+v", result)
+	}
+	select {
+	case <-env.started:
+		t.Fatal("the environment must never have been asked to start")
+	default:
+	}
+	if s.CurrentOperation() != "" {
+		t.Fatal("reservation still held after a failed start")
 	}
 }

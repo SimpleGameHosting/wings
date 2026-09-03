@@ -41,6 +41,12 @@ var ErrOperationInProgress = errors.Sentinel("server: another exclusive operatio
 // exclusion.
 var ErrUnknownOperation = errors.Sentinel("server: unknown operation kind")
 
+// ErrEmptyFencedID indicates a fenced job was admitted without an
+// identity. The empty id is what releaseFenced treats as owning nothing,
+// so admitting one would claim a reservation that no release could ever
+// give back, leaving the server stuck as installing until it restarts.
+var ErrEmptyFencedID = errors.Sentinel("server: fenced operation id must not be empty")
+
 // operationLock serializes claims across the mutually exclusive operation
 // kinds a server can run. The legacy AtomicBool flags (installing,
 // transferring, restoring) remain the externally visible state that the rest
@@ -79,10 +85,23 @@ func (f *fencedIdentity) isRecent(id string) bool {
 // mutex. Two simultaneous requests for the same id therefore both learn it
 // is admitted and exactly one job runs. Callers must not hold s.operation.mu.
 //
+// An unknown kind and an empty id are both refused before anything is
+// claimed, for the same reason TryBeginOperation refuses an unknown kind:
+// the empty string is how this package spells "nothing claimed" and
+// "nothing to release", so admitting either would claim a reservation
+// that nothing could then release.
+//
 // Like TryBeginOperation, it must never be called while the caller already
 // holds the Server's own mutex (s.Lock/s.RLock): mirroring the legacy flag
 // goes through SetInstalling and friends, which acquire that same mutex.
 func (s *Server) admitFenced(identity *fencedIdentity, kind Operation, id string) (bool, error) {
+	if !kind.IsValid() {
+		return false, errors.Wrapf(ErrUnknownOperation, "kind: %q", kind)
+	}
+	if id == "" {
+		return false, errors.WithStack(ErrEmptyFencedID)
+	}
+
 	s.operation.mu.Lock()
 	defer s.operation.mu.Unlock()
 

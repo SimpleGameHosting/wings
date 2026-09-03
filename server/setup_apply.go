@@ -45,6 +45,10 @@ const setupApplyStopGrace = 60 * time.Second
 // lock, matching what the power route allows a client to ask for.
 const setupApplyStartWait = 30
 
+// setupApplySettleInterval is how often the stop step re-reads the
+// environment state while waiting for a stop to settle.
+const setupApplySettleInterval = 100 * time.Millisecond
+
 // setupApplyTimeout resolves the deadline one attempt runs under. It reads
 // the configured value on every call rather than caching it, and is a
 // variable rather than a plain expression only so a test can shorten a
@@ -141,8 +145,15 @@ func (s *Server) runSetupApplyPipeline(ctx context.Context, req setupapply.Reque
 	status("stopping")
 	if s.Environment.State() != environment.ProcessOfflineState {
 		if err := s.Environment.WaitForStop(ctx, setupApplyStopGrace, true); err != nil {
+			s.Log().WithField("error", err).WithField("setup_id", req.SetupID).Warn("setup apply: failed to stop the server")
 			return fail(SetupApplyErrorStopFailed, errors.New("setupapply: failed to stop the server"))
 		}
+
+		// WaitForStop returns as soon as the process is gone, while the
+		// transition to the offline state is published a moment later by
+		// the environment's own attach stream. A start issued before then
+		// is refused as already running, so the job waits it out...
+		s.awaitOfflineState(ctx)
 	}
 	if err := interrupted(); err != nil {
 		return err
@@ -150,9 +161,12 @@ func (s *Server) runSetupApplyPipeline(ctx context.Context, req setupapply.Reque
 
 	status("applying")
 	if err := setupapply.Apply(s.Filesystem(), req); err != nil {
-		// Apply errors name the file and the rule that refused it and never
-		// carry file contents, so the message is safe to relay as is...
-		return fail(SetupApplyErrorApplyFailed, err)
+		// The underlying error can carry host paths, and every apply error
+		// reaches the panel and every websocket viewer verbatim, so the
+		// detail stays in the node's own log and the attempt reports only
+		// this step's fixed message...
+		s.Log().WithField("error", err).WithField("setup_id", req.SetupID).Warn("setup apply: failed to apply the setup files")
+		return fail(SetupApplyErrorApplyFailed, errors.New("setupapply: failed to apply the setup files"))
 	}
 	if err := interrupted(); err != nil {
 		return err
@@ -167,13 +181,34 @@ func (s *Server) runSetupApplyPipeline(ctx context.Context, req setupapply.Reque
 		// A user power action can win the reservation in the moment between
 		// the release above and this call, leaving the server already
 		// booting by the time the start step looks. That is the end state
-		// this job was asking for, so it is a success, not a failure...
+		// this job was asking for, so it is a success, not a failure. The
+		// same error is reported for any state that is not offline though,
+		// stopping included, so only a server that is genuinely up counts...
 		if errors.Is(err, ErrIsRunning) {
-			return nil
+			if state := s.Environment.State(); state == environment.ProcessRunningState || state == environment.ProcessStartingState {
+				return nil
+			}
 		}
+		s.Log().WithField("error", err).WithField("setup_id", req.SetupID).Warn("setup apply: failed to start the server")
 		return fail(SetupApplyErrorStartFailed, errors.New("setupapply: failed to start the server"))
 	}
 	return nil
+}
+
+// awaitOfflineState blocks until the environment reports the server
+// offline, or until ctx is done. It is bounded only by the attempt's own
+// context, so a stop that never settles ends the attempt as a timeout, or
+// as an internal error when the server itself is being torn down, rather
+// than under the stop step's own code: the stop command itself succeeded,
+// and only the deadline can say how long the job is willing to wait.
+func (s *Server) awaitOfflineState(ctx context.Context) {
+	for s.Environment.State() != environment.ProcessOfflineState {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(setupApplySettleInterval):
+		}
+	}
 }
 
 // finishSetupApply is the single exit path for an attempt: it tells the

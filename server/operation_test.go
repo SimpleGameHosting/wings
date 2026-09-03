@@ -283,3 +283,39 @@ func TestAbandonModpackInstallClaimForgetsTheAttempt(t *testing.T) {
 		t.Fatalf("an abandoned id must be admitted afresh, got repeat=%v err=%v", repeat, err)
 	}
 }
+
+// TestAdmitFencedRefusesAnEmptyID proves an identity-less admission claims
+// nothing. The empty id is what releaseFenced treats as owning nothing, so
+// admitting one would leave the reservation held with no release able to
+// give it back.
+func TestAdmitFencedRefusesAnEmptyID(t *testing.T) {
+	s := newOperationTestServer(t)
+
+	repeat, err := s.AdmitSetupApply("")
+	assert.False(t, repeat)
+	assert.True(t, errors.Is(err, ErrEmptyFencedID))
+	assert.Equal(t, Operation(""), s.CurrentOperation())
+	assert.False(t, s.IsInstalling())
+
+	// The server must still be free for a real attempt afterwards...
+	admitted, err := s.AdmitSetupApply("88888888-8888-8888-8888-888888888888")
+	require.NoError(t, err)
+	assert.False(t, admitted)
+}
+
+// TestAdmitFencedRefusesAnUnknownKind proves the kind guard TryBeginOperation
+// applies is applied here too, so the empty-string zero value can never be
+// mistaken for "nothing claimed" and silently defeat mutual exclusion.
+func TestAdmitFencedRefusesAnUnknownKind(t *testing.T) {
+	s := newOperationTestServer(t)
+
+	repeat, err := s.admitFenced(&s.operation.setup, Operation("nonsense"), "99999999-9999-9999-9999-999999999999")
+	assert.False(t, repeat)
+	assert.True(t, errors.Is(err, ErrUnknownOperation))
+	assert.Equal(t, Operation(""), s.CurrentOperation())
+
+	repeat, err = s.admitFenced(&s.operation.setup, Operation(""), "99999999-9999-9999-9999-999999999999")
+	assert.False(t, repeat)
+	assert.True(t, errors.Is(err, ErrUnknownOperation))
+	assert.Equal(t, Operation(""), s.CurrentOperation())
+}
