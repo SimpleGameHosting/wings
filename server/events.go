@@ -21,6 +21,7 @@ const (
 	DeletedEvent                = "deleted"
 	ModpackInstallStatusEvent   = "modpack install status"
 	ModpackInstallProgressEvent = "modpack install progress"
+	SetupApplyStatusEvent       = "setup apply status"
 )
 
 // Events returns the server's emitter instance.
