@@ -216,3 +216,70 @@ func TestAdmitSetupApplyMirrorsInstallAdmission(t *testing.T) {
 		t.Fatalf("finished id must still be a repeat, got repeat=%v err=%v", repeat, err)
 	}
 }
+
+// TestReleasingAFencedClaimRequiresOwningTheID proves a release naming any
+// id other than the one holding the fence leaves the running job's
+// reservation and active id untouched. Both fence kinds claim
+// OperationInstall, so without that ownership check a stale, duplicated,
+// or late release of either kind would tear the server out from under a
+// job that is still running.
+func TestReleasingAFencedClaimRequiresOwningTheID(t *testing.T) {
+	s := newOperationTestServer(t)
+	const active = "55555555-5555-5555-5555-555555555555"
+	const stranger = "66666666-6666-6666-6666-666666666666"
+
+	if repeat, err := s.AdmitModpackInstall(active); err != nil || repeat {
+		t.Fatalf("first admit must claim, got repeat=%v err=%v", repeat, err)
+	}
+
+	// Neither a stale release from the other fence nor one from this fence
+	// may disturb the claim, since neither names the id that owns it...
+	s.releaseSetupApplyClaim(stranger)
+	s.releaseModpackInstallClaim(stranger)
+	s.AbandonModpackInstallClaim(stranger)
+
+	if current := s.CurrentOperation(); current != OperationInstall {
+		t.Fatalf("a release for a foreign id cleared the reservation, current = %q", current)
+	}
+	if id := s.ActiveModpackInstallID(); id != active {
+		t.Fatalf("a release for a foreign id cleared the active id, got %q want %q", id, active)
+	}
+	if !s.IsInstalling() {
+		t.Fatal("a release for a foreign id cleared the legacy installing flag")
+	}
+
+	s.releaseModpackInstallClaim(active)
+
+	if current := s.CurrentOperation(); current != "" {
+		t.Fatalf("the owning release must clear the reservation, got %q", current)
+	}
+	if id := s.ActiveModpackInstallID(); id != "" {
+		t.Fatalf("the owning release must clear the active id, got %q", id)
+	}
+}
+
+// TestAbandonModpackInstallClaimForgetsTheAttempt pins the abandon rule: a
+// claim whose job never started releases everything but is deliberately
+// not remembered as finished, so the panel's retry of that same id is
+// admitted as a fresh attempt rather than answered as a repeat that never
+// ran.
+func TestAbandonModpackInstallClaimForgetsTheAttempt(t *testing.T) {
+	s := newOperationTestServer(t)
+	const id = "77777777-7777-7777-7777-777777777777"
+
+	if repeat, err := s.AdmitModpackInstall(id); err != nil || repeat {
+		t.Fatalf("first admit must claim, got repeat=%v err=%v", repeat, err)
+	}
+
+	s.AbandonModpackInstallClaim(id)
+
+	if current := s.CurrentOperation(); current != "" {
+		t.Fatalf("abandon must release the reservation, got %q", current)
+	}
+	if active := s.ActiveModpackInstallID(); active != "" {
+		t.Fatalf("abandon must clear the active id, got %q", active)
+	}
+	if repeat, err := s.AdmitModpackInstall(id); err != nil || repeat {
+		t.Fatalf("an abandoned id must be admitted afresh, got repeat=%v err=%v", repeat, err)
+	}
+}

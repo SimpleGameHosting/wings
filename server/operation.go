@@ -101,13 +101,31 @@ func (s *Server) admitFenced(identity *fencedIdentity, kind Operation, id string
 }
 
 // releaseFenced retires a finished attempt: it remembers the id as the last
-// one to finish, clears the active id, and releases the reservation, all
-// inside one hold of the mutex.
+// one to finish, and, when that id is the one actually holding this fence,
+// clears the active id and releases the reservation too, all inside one
+// hold of the mutex. A release naming any other id touches neither the
+// active id nor the reservation, because both fence kinds claim the same
+// operation and endOperationLocked cannot tell them apart: without this
+// ownership check a stale, duplicated, or late release would tear the
+// server out from under a job that is still running. The id is still
+// remembered as finished in that case, since a finished attempt must stay
+// recognisable as a repeat however it was released. The empty id owns
+// nothing and is never a repeat, so releasing it does nothing at all
+// rather than overwriting the remembered one.
 func (s *Server) releaseFenced(identity *fencedIdentity, kind Operation, id string) {
 	s.operation.mu.Lock()
 	defer s.operation.mu.Unlock()
 
+	if id == "" {
+		return
+	}
+
 	identity.lastFinished = id
+
+	if identity.active != id {
+		return
+	}
+
 	identity.active = ""
 	s.endOperationLocked(kind)
 }

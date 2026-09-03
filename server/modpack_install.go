@@ -126,14 +126,19 @@ func (s *Server) ActiveModpackInstallID() string {
 
 // AbandonModpackInstallClaim releases a claim whose job never started (the
 // node slot was full) without remembering the id as finished, so the
-// panel's retry of that id is admitted as a fresh attempt.
+// panel's retry of that id is admitted as a fresh attempt. Like every
+// other release on this fence it is a no-op unless installID is the id
+// actually holding the claim, so a stale or duplicated abandon can never
+// free the server out from under a job that is still running.
 func (s *Server) AbandonModpackInstallClaim(installID string) {
 	s.operation.mu.Lock()
 	defer s.operation.mu.Unlock()
 
-	if s.operation.install.active == installID {
-		s.operation.install.active = ""
+	if installID == "" || s.operation.install.active != installID {
+		return
 	}
+
+	s.operation.install.active = ""
 	s.endOperationLocked(OperationInstall)
 }
 
