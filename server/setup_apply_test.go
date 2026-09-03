@@ -27,10 +27,12 @@ type setupApplyTestClient struct {
 	remote.Client
 
 	results  chan remote.SetupApplyResultRequest
+	reports  chan fencedReportContext
 	settings json.RawMessage
 }
 
-func (c setupApplyTestClient) SendSetupApplyResult(_ context.Context, _ string, data remote.SetupApplyResultRequest) error {
+func (c setupApplyTestClient) SendSetupApplyResult(ctx context.Context, _ string, data remote.SetupApplyResultRequest) error {
+	c.reports <- observeFencedReportContext(ctx)
 	c.results <- data
 	return nil
 }
@@ -148,7 +150,11 @@ func newSetupApplyServer(t *testing.T) (*Server, setupApplyTestClient, *setupApp
 	t.Cleanup(func() { config.Set(previous) })
 
 	settings := json.RawMessage(fmt.Sprintf(`{"uuid":%q}`, uuid.NewString()))
-	client := setupApplyTestClient{results: make(chan remote.SetupApplyResultRequest, 2), settings: settings}
+	client := setupApplyTestClient{
+		results:  make(chan remote.SetupApplyResultRequest, 2),
+		reports:  make(chan fencedReportContext, 2),
+		settings: settings,
+	}
 	m := NewEmptyManager(client)
 	s, err := m.InitServer(setupApplyServerConfiguration(settings))
 	if err != nil {
@@ -627,5 +633,26 @@ func TestRunSetupApplyReportsStartFailedWhenTheServerIsStillStopping(t *testing.
 	}
 	if s.CurrentOperation() != "" {
 		t.Fatal("reservation still held after a failed start")
+	}
+}
+
+// TestRunSetupApplyReportsTheResultWithABoundedContext checks the panel
+// callback carries a deadline of its own instead of the attempt's context,
+// which on the timeout path is already expired when the report is sent.
+func TestRunSetupApplyReportsTheResultWithABoundedContext(t *testing.T) {
+	s, client, _ := newSetupApplyServer(t)
+	req := setupapply.Request{SetupID: uuid.NewString()}
+	if repeat, err := s.AdmitSetupApply(req.SetupID); err != nil || repeat {
+		t.Fatalf("admit: repeat=%v err=%v", repeat, err)
+	}
+
+	s.RunSetupApply(req)
+
+	report := <-client.reports
+	if !report.bounded {
+		t.Fatal("the result report must be sent with a bounded context")
+	}
+	if report.err != nil {
+		t.Fatalf("the result report context was already done: %v", report.err)
 	}
 }

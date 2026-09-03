@@ -316,8 +316,11 @@ func (s *Server) finishModpackInstall(req modpackinstall.Request, installErr err
 			Warn("modpack install: attempt failed")
 	}
 
-	if err := s.client.SendModpackInstallResult(context.Background(), s.ID(), result); err != nil {
-		s.Log().WithField("error", err).WithField("install_id", req.InstallID).Warn("modpack install: failed to report result to panel")
+	reportCtx, cancelReport := fencedResultReportContext()
+	reportErr := s.client.SendModpackInstallResult(reportCtx, s.ID(), result)
+	cancelReport()
+	if reportErr != nil {
+		s.Log().WithField("error", reportErr).WithField("install_id", req.InstallID).Warn("modpack install: failed to report result to panel")
 	}
 
 	s.Events().Publish(ModpackInstallStatusEvent, terminal)

@@ -236,8 +236,11 @@ func (s *Server) finishSetupApply(req setupapply.Request, applyErr error, start 
 		s.Log().WithField("setup_id", req.SetupID).Info("setup apply: attempt finished")
 	}
 
-	if err := s.client.SendSetupApplyResult(context.Background(), s.ID(), result); err != nil {
-		s.Log().WithField("error", err).WithField("setup_id", req.SetupID).Warn("setup apply: failed to report result to panel")
+	reportCtx, cancelReport := fencedResultReportContext()
+	reportErr := s.client.SendSetupApplyResult(reportCtx, s.ID(), result)
+	cancelReport()
+	if reportErr != nil {
+		s.Log().WithField("error", reportErr).WithField("setup_id", req.SetupID).Warn("setup apply: failed to report result to panel")
 	}
 
 	s.Events().Publish(SetupApplyStatusEvent, terminal)

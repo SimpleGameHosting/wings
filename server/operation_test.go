@@ -1,10 +1,12 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -318,4 +320,36 @@ func TestAdmitFencedRefusesAnUnknownKind(t *testing.T) {
 	assert.False(t, repeat)
 	assert.True(t, errors.Is(err, ErrUnknownOperation))
 	assert.Equal(t, Operation(""), s.CurrentOperation())
+}
+
+// fencedReportContext is what a test client observes about the context a
+// finished fenced job reported its outcome with, captured at call time
+// because the finisher cancels that context once the callback returns.
+type fencedReportContext struct {
+	bounded bool
+	err     error
+}
+
+// observeFencedReportContext snapshots the deadline and liveness of the
+// context a result callback was invoked with.
+func observeFencedReportContext(ctx context.Context) fencedReportContext {
+	_, bounded := ctx.Deadline()
+	return fencedReportContext{bounded: bounded, err: ctx.Err()}
+}
+
+// TestFencedResultReportContextIsBounded pins the panel callback a finished
+// fenced job sends to a deadline of its own, so a slow panel cannot hold the
+// finisher forever, while staying detached from the attempt's context, which
+// has usually already expired or been cancelled on exactly the paths where
+// the panel most needs to hear the outcome.
+func TestFencedResultReportContextIsBounded(t *testing.T) {
+	ctx, cancel := fencedResultReportContext()
+	defer cancel()
+
+	deadline, ok := ctx.Deadline()
+	require.True(t, ok, "report context must carry a deadline")
+	remaining := time.Until(deadline)
+	assert.Greater(t, remaining, time.Duration(0))
+	assert.LessOrEqual(t, remaining, fencedResultReportTimeout)
+	assert.NoError(t, ctx.Err(), "report context must not inherit a done parent")
 }

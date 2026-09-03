@@ -1,10 +1,16 @@
 package server
 
 import (
+	"context"
 	"sync"
+	"time"
 
 	"emperror.dev/errors"
 )
+
+// fencedResultReportTimeout bounds the panel callback that reports a fenced
+// job's terminal outcome, so a slow panel cannot hold the finisher forever.
+const fencedResultReportTimeout = 30 * time.Second
 
 // Operation names one of the mutually exclusive long-running things a server
 // can be doing at once, such as installing, transferring, or restoring. The
@@ -14,6 +20,7 @@ import (
 // constants below, via IsValid.
 type Operation string
 
+// The four operation kinds a server can hold the exclusive reservation for.
 const (
 	OperationInstall  Operation = "install"
 	OperationTransfer Operation = "transfer"
@@ -242,4 +249,14 @@ func (s *Server) setLegacyFlag(kind Operation, state bool) {
 	default:
 		// Unreachable: both call sites guard with kind.IsValid() first.
 	}
+}
+
+// fencedResultReportContext returns the context a finished fenced job reports
+// its outcome with. It is deliberately detached from the attempt's own
+// context: on the timeout and cancellation paths that context is already done
+// by the time the report is sent, and those are exactly the outcomes the
+// panel most needs to hear about. The remote client's own request timeout
+// still applies underneath this deadline.
+func fencedResultReportContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), fencedResultReportTimeout)
 }

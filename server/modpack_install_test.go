@@ -1,10 +1,19 @@
 package server
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/pterodactyl/wings/config"
+	"github.com/pterodactyl/wings/internal/modpackinstall"
+	"github.com/pterodactyl/wings/remote"
 )
 
 // ensureModpackInstallSlotDefaults pins the node-wide install cap to its
@@ -70,5 +79,59 @@ func TestModpackInstallSlotConcurrency(t *testing.T) {
 	wg.Wait()
 	if granted != 3 {
 		t.Errorf("granted=%d want exactly 3", granted)
+	}
+}
+
+// modpackInstallTestClient records the context a finished install reported
+// its outcome with, observed at call time.
+type modpackInstallTestClient struct {
+	remote.Client
+
+	reports chan fencedReportContext
+}
+
+func (c modpackInstallTestClient) SendModpackInstallResult(ctx context.Context, _ string, _ remote.ModpackInstallResultRequest) error {
+	c.reports <- observeFencedReportContext(ctx)
+	return nil
+}
+
+// newModpackInstallServer builds a server whose panel client only records
+// the install result callback, which is all the finisher needs.
+func newModpackInstallServer(t *testing.T) (*Server, modpackInstallTestClient) {
+	t.Helper()
+
+	previous := config.Get()
+	next := *previous
+	next.System.Data = t.TempDir()
+	next.System.User.Uid = os.Getuid()
+	next.System.User.Gid = os.Getgid()
+	config.Set(&next)
+	t.Cleanup(func() { config.Set(previous) })
+
+	settings := json.RawMessage(fmt.Sprintf(`{"uuid":%q}`, uuid.NewString()))
+	client := modpackInstallTestClient{reports: make(chan fencedReportContext, 1)}
+	s, err := NewEmptyManager(client).InitServer(setupApplyServerConfiguration(settings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.CtxCancel)
+	return s, client
+}
+
+// TestFinishModpackInstallReportsTheResultWithABoundedContext checks the
+// panel callback carries a deadline of its own instead of the attempt's
+// context, which on the timeout path is already expired when the report is
+// sent.
+func TestFinishModpackInstallReportsTheResultWithABoundedContext(t *testing.T) {
+	s, client := newModpackInstallServer(t)
+
+	s.finishModpackInstall(modpackinstall.Request{InstallID: uuid.NewString()}, nil, time.Now(), func() {})
+
+	report := <-client.reports
+	if !report.bounded {
+		t.Fatal("the result report must be sent with a bounded context")
+	}
+	if report.err != nil {
+		t.Fatalf("the result report context was already done: %v", report.err)
 	}
 }
