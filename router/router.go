@@ -84,6 +84,7 @@ func Configure(m *wserver.Manager, client remote.Client) *gin.Engine {
 		server.POST("/install", postServerInstall)
 		server.POST("/reinstall", postServerReinstall)
 		server.POST("/modpack-install", postServerModpackInstall)
+		server.POST("/setup-apply", postServerSetupApply)
 		server.POST("/sync", postServerSync)
 		server.POST("/fingerprint", postServerFingerprint)
 		server.POST("/ws/deny", postServerDenyWSTokens)

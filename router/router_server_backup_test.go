@@ -42,8 +42,18 @@ func (c backupTestRemoteClient) GetInstallationScript(context.Context, string) (
 	return remote.InstallationScript{}, nil
 }
 
-func (c backupTestRemoteClient) GetServerConfiguration(context.Context, string) (remote.ServerConfigurationResponse, error) {
-	return remote.ServerConfigurationResponse{}, nil
+// GetServerConfiguration answers the environment sync that a real start
+// action performs with a settings payload that preserves the server's own
+// uuid, plus a non-nil ProcessConfiguration, since callers such as the
+// setup-apply job power the server on for real: an empty Settings body
+// fails json.Unmarshal, a mismatched uuid would silently rename the server
+// mid-test, and a nil ProcessConfiguration is dereferenced while updating
+// configuration files.
+func (c backupTestRemoteClient) GetServerConfiguration(_ context.Context, uuid string) (remote.ServerConfigurationResponse, error) {
+	return remote.ServerConfigurationResponse{
+		Settings:             json.RawMessage(fmt.Sprintf(`{"uuid":%q}`, uuid)),
+		ProcessConfiguration: &remote.ProcessConfiguration{},
+	}, nil
 }
 
 func (c backupTestRemoteClient) GetServers(context.Context, int) ([]remote.RawServerData, error) {
