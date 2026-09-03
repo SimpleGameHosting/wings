@@ -167,6 +167,12 @@ func PatchProperties(fs *filesystem.Filesystem, patch map[string]string) error {
 		remaining[key] = value
 	}
 
+	// seen tracks every patched key that matched at least one line, so a
+	// key repeated across duplicate lines (java.util.Properties is
+	// last-wins) gets every occurrence rewritten instead of only the
+	// first, and is not appended again at the end...
+	seen := make(map[string]bool, len(patch))
+
 	var out bytes.Buffer
 	lines := splitKeepingTrailing(string(content))
 	for _, line := range lines {
@@ -174,7 +180,7 @@ func PatchProperties(fs *filesystem.Filesystem, patch map[string]string) error {
 		if isPair {
 			if value, patched := remaining[key]; patched {
 				out.WriteString(key + "=" + value + newline)
-				delete(remaining, key)
+				seen[key] = true
 				continue
 			}
 		}
@@ -189,6 +195,9 @@ func PatchProperties(fs *filesystem.Filesystem, patch map[string]string) error {
 	}
 	keys := make([]string, 0, len(remaining))
 	for key := range remaining {
+		if seen[key] {
+			continue
+		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
@@ -273,6 +282,10 @@ func splitKeepingTrailing(content string) []string {
 func publish(fs *filesystem.Filesystem, name string, content []byte) error {
 	temp := name + tempSuffix
 	if err := fs.Write(temp, bytes.NewReader(content), int64(len(content)), 0o644); err != nil {
+		// Write touches and truncates the temp file before copying into
+		// it, so a failed write can still leave a staged file behind and
+		// charged to quota; clean it up on this path too...
+		_ = fs.Delete(temp)
 		return errors.Wrap(err, "setupapply: failed to stage "+name)
 	}
 	if err := fs.Replace(temp, name); err != nil {

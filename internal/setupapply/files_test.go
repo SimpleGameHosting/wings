@@ -118,6 +118,22 @@ func TestPatchPropertiesPreservesEverythingElse(t *testing.T) {
 	}
 }
 
+// TestPatchPropertiesRewritesEveryDuplicateOccurrence proves a patched key
+// that appears more than once in the file gets every occurrence rewritten,
+// matching java.util.Properties' last-wins semantics, rather than only the
+// first line encountered.
+func TestPatchPropertiesRewritesEveryDuplicateOccurrence(t *testing.T) {
+	fs := newTestFs(t)
+	mustWrite(t, fs, PropertiesFileName, "white-list=false\nmotd=Hello\nwhite-list=false\n")
+	if err := PatchProperties(fs, map[string]string{"white-list": "true"}); err != nil {
+		t.Fatal(err)
+	}
+	want := "white-list=true\nmotd=Hello\nwhite-list=true\n"
+	if got := mustRead(t, fs, PropertiesFileName); got != want {
+		t.Fatalf("server.properties = %q, want %q", got, want)
+	}
+}
+
 func TestPatchPropertiesUsesLFWhenFileUsesLF(t *testing.T) {
 	fs := newTestFs(t)
 	mustWrite(t, fs, PropertiesFileName, "motd=Hello\nwhite-list=false\n")
@@ -208,6 +224,25 @@ func TestApplyRunsEverythingInOrderAndSkipsAbsentFields(t *testing.T) {
 	for _, name := range []string{EulaFileName, OpsFileName, WhitelistFileName, PropertiesFileName} {
 		if _, err := empty.UnixFS().Lstat(name); err == nil {
 			t.Fatalf("%s must not exist after an empty apply", name)
+		}
+	}
+}
+
+// TestPublishLeavesNoStagingFileBehind proves a successful publish cleans
+// up its own staging file rather than leaving a .sgh-setup.tmp entry
+// charged to quota on the server root.
+func TestPublishLeavesNoStagingFileBehind(t *testing.T) {
+	fs := newTestFs(t)
+	if err := PatchProperties(fs, map[string]string{"white-list": "true"}); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(fs.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(entry.Name(), tempSuffix) {
+			t.Fatalf("staging file left behind after publish: %s", entry.Name())
 		}
 	}
 }
