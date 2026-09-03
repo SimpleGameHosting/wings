@@ -9,15 +9,18 @@ import (
 
 // Checks if the given file or path is in the server's file denylist. If so, an Error
 // is returned, otherwise nil is returned.
+//
+// TODO: update logic to use unixFS
 func (fs *Filesystem) IsIgnored(paths ...string) error {
 	for _, p := range paths {
-		//sp, err := fs.SafePath(p)
-		//if err != nil {
-		//	return err
-		//}
-		// TODO: update logic to use unixFS
-		if fs.denylist.MatchesPath(p) {
-			return errors.WithStack(&Error{code: ErrCodeDenylistFile, path: p, resolved: p})
+		// Match the path the filesystem will actually touch, not the string the
+		// client sent. Rooting the path before cleaning mirrors how the unixFS
+		// clamps every path under the server root, so traversal (foo/../denied),
+		// a leading ".." that the clamp swallows, doubled slashes, and dot
+		// segments all collapse to the same denied location...
+		cleaned := filepath.Clean("/" + p)
+		if fs.denylist.MatchesPath(cleaned) {
+			return errors.WithStack(&Error{code: ErrCodeDenylistFile, path: p, resolved: cleaned})
 		}
 	}
 	return nil

@@ -168,3 +168,59 @@ func TestFilesystem_Blocks_Symlinks(t *testing.T) {
 
 	_ = fs.TruncateRootDirectory()
 }
+
+// The egg denylist must judge the file a request will actually touch, not the
+// string the client typed. Every spelling below resolves to the same location
+// once the filesystem clamps it under the server root, so every one of them
+// has to be denied, including a leading ".." which the root clamp swallows.
+func TestFilesystem_IsIgnored(t *testing.T) {
+	g := Goblin(t)
+	base, _ := NewFs()
+	fs, err := New(base.Path(), 0, []string{"/config/secret.yml", "denied.txt"})
+	if err != nil {
+		panic(err)
+	}
+
+	g.Describe("IsIgnored", func() {
+		g.It("denies every spelling of a denied path", func() {
+			for _, p := range []string{
+				"config/secret.yml",
+				"/config/secret.yml",
+				"foo/../config/secret.yml",
+				"config/../config/secret.yml",
+				"../config/secret.yml",
+				"../../config/secret.yml",
+				"//config/secret.yml",
+				"./config/secret.yml",
+				"config/secret.yml/.",
+				"denied.txt",
+				"world/denied.txt",
+				"world/../denied.txt",
+				"../denied.txt",
+			} {
+				g.Assert(fs.IsIgnored(p) != nil).IsTrue("expected " + p + " to be denied")
+			}
+		})
+
+		g.It("allows neighbouring paths that are not denied", func() {
+			for _, p := range []string{
+				"config/public.yml",
+				"secret.yml",
+				"allowed.txt",
+				"config/secret.yml.bak",
+			} {
+				g.Assert(fs.IsIgnored(p)).IsNil("expected " + p + " to be allowed")
+			}
+		})
+
+		g.It("reports the input and the matched path in the error", func() {
+			err := fs.IsIgnored("foo/../config/secret.yml")
+			g.Assert(err != nil).IsTrue()
+			var fsErr *Error
+			g.Assert(errors.As(err, &fsErr)).IsTrue()
+			g.Assert(fsErr.code).Equal(ErrCodeDenylistFile)
+			g.Assert(fsErr.path).Equal("foo/../config/secret.yml")
+			g.Assert(fsErr.resolved).Equal("/config/secret.yml")
+		})
+	})
+}

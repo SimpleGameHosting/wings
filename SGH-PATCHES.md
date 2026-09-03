@@ -282,3 +282,16 @@ Every SGH modification MUST be registered here before its work is considered com
   That helper was swapped for `cerrdefs.IsNotFound` at all six call sites in the file, five of which are upstream lines, because mixing both spellings in one file reads worse than five one-line touches; `github.com/containerd/errdefs` became a direct dependency as a result.
 - Files: `.golangci.yml`, `Makefile`, `.github/workflows/push.yaml`, `environment/docker/power.go`, `go.mod`, `internal/modpackinstall/request.go`, `internal/setupapply/files.go`, `server/operation.go`, `server/upload_limits.go`, `server/uploads.go`.
 - Conflict risk on rebase: low for the lint setup, since upstream has no lint configuration and rarely touches the Makefile; low-medium for `power.go`, where each `IsNotFound` line conflicts trivially if upstream edits it.
+
+### files: match the egg denylist against the clamped path
+
+- What: `Filesystem.IsIgnored` roots and cleans each candidate (`filepath.Clean("/" + p)`) before matching it against the egg denylist, mirroring how the unixFS clamps every path under the server root.
+  Traversal (`foo/../denied`), a leading `..` that the clamp swallows, doubled slashes, and dot segments therefore all collapse to the denied location.
+  The returned error keeps the original input in `path` and the clamped match in `resolved`.
+  This closes the lexical bypass only: a symlinked directory inside the root (`link/secret.yml`) still evades string matching, a pre-existing upstream gap that a real fix would close by matching the parent directory resolved through the openat2 walk.
+- Why: the denylist matched the raw request string while the filesystem resolved to the clamped location afterwards.
+  Only anchored patterns (a leading `/`, or a `dir/*.ext` form the matcher anchors itself) were affected, since unanchored patterns already tolerate any prefix.
+  The exposed entry points were the write-file and copy-file endpoints, which passed the raw string; rename, extract, and both upload paths already joined or normalised their paths, and upload rejects `..` outright.
+- Files: `server/filesystem/path.go`, `server/filesystem/path_test.go`.
+- Conflict risk on rebase: low; one hunk plus an additive goblin block in the existing test file.
+  Not yet reported upstream.
