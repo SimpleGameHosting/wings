@@ -14,3 +14,13 @@ func TestModpackInstallDefaults(t *testing.T) {
 		t.Errorf("TimeoutMinutes default = %d, want 30", c.System.ModpackInstall.TimeoutMinutes)
 	}
 }
+
+func TestSetupApplyDefaults(t *testing.T) {
+	c, err := NewAtPath("/tmp/nonexistent-rig-config.yml")
+	if err != nil {
+		t.Fatalf("unexpected error building config: %v", err)
+	}
+	if c.System.SetupApply.TimeoutMinutes != 5 {
+		t.Errorf("TimeoutMinutes default = %d, want 5", c.System.SetupApply.TimeoutMinutes)
+	}
+}

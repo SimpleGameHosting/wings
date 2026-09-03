@@ -23,6 +23,10 @@ const (
 	// modpackInstallResultTimeout bounds the terminal callback for a native
 	// install; the job is already finished, so this must never hang the node.
 	modpackInstallResultTimeout = 10 * time.Second
+
+	// setupApplyResultTimeout bounds the terminal callback for a native
+	// setup launch; the job is already finished, so this must never hang.
+	setupApplyResultTimeout = 10 * time.Second
 )
 
 // GetServers returns all the servers that are present on the Panel making
@@ -143,6 +147,22 @@ func (c *client) SendModpackInstallResult(ctx context.Context, uuid string, data
 	defer cancel()
 
 	resp, err := c.postWithRetries(ctx, fmt.Sprintf("/servers/%s/modpack-install-result", uuid), data, 1)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+
+	return nil
+}
+
+// SendSetupApplyResult reports a finished native setup launch attempt. It is
+// called on a fresh context, never the job context, and retries once like
+// the install result.
+func (c *client) SendSetupApplyResult(ctx context.Context, uuid string, data SetupApplyResultRequest) error {
+	ctx, cancel := context.WithTimeout(ctx, setupApplyResultTimeout)
+	defer cancel()
+
+	resp, err := c.postWithRetries(ctx, fmt.Sprintf("/servers/%s/setup-apply-result", uuid), data, 1)
 	if err != nil {
 		return err
 	}

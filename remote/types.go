@@ -275,3 +275,15 @@ type ModpackInstallResultRequest struct {
 	ErrorCode  string `json:"error_code"`
 	DurationMs int64  `json:"duration_ms"`
 }
+
+// SetupApplyResultRequest reports the terminal outcome of one native guided
+// setup launch attempt back to the panel. The panel fences on SetupID, so
+// a stale or duplicate report is harmless. ErrorCode is one of stop_failed,
+// apply_failed, start_failed, timeout, or internal_error, empty on success.
+type SetupApplyResultRequest struct {
+	SetupID    string `json:"setup_id"`
+	Successful bool   `json:"successful"`
+	Error      string `json:"error"`
+	ErrorCode  string `json:"error_code"`
+	DurationMs int64  `json:"duration_ms"`
+}

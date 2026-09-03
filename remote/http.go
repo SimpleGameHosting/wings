@@ -37,6 +37,7 @@ type Client interface {
 	SendActivityLogs(ctx context.Context, activity []models.Activity) error
 	SendPlayerEvents(ctx context.Context, uuid string, events []PlayerEventRequest) error
 	SendModpackInstallResult(ctx context.Context, uuid string, data ModpackInstallResultRequest) error
+	SendSetupApplyResult(ctx context.Context, uuid string, data SetupApplyResultRequest) error
 	SetCredentials(id, token string)
 }
 

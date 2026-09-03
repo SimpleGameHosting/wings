@@ -31,6 +31,7 @@ type backupTestRemoteClient struct {
 	restoreStatus  chan string
 	credentials    chan [2]string
 	modpackResults chan remote.ModpackInstallResultRequest
+	setupResults   chan remote.SetupApplyResultRequest
 }
 
 func (c backupTestRemoteClient) GetBackupRemoteUploadURLs(context.Context, string, int64) (remote.BackupRemoteUploadResponse, error) {
@@ -106,6 +107,19 @@ func (c backupTestRemoteClient) SendModpackInstallResult(_ context.Context, _ st
 	if c.modpackResults != nil {
 		select {
 		case c.modpackResults <- data:
+		default:
+		}
+	}
+	return nil
+}
+
+// SendSetupApplyResult records the terminal report of a native setup apply
+// attempt for the tests that assert on it, and is a no-op for the ones
+// that do not wire up a channel.
+func (c backupTestRemoteClient) SendSetupApplyResult(_ context.Context, _ string, data remote.SetupApplyResultRequest) error {
+	if c.setupResults != nil {
+		select {
+		case c.setupResults <- data:
 		default:
 		}
 	}

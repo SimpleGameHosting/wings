@@ -187,3 +187,58 @@ func TestSendModpackInstallResultRetriesOnFailure(t *testing.T) {
 	assert.Equal(t, "download failed", last["error"])
 	assert.Equal(t, "download_failed", last["error_code"])
 }
+
+func TestSendSetupApplyResult(t *testing.T) {
+	c, _ := createTestClient(func(rw http.ResponseWriter, r *http.Request) {
+		assert.Equal(t, http.MethodPost, r.Method)
+		assert.Equal(t, "/servers/abc-uuid/setup-apply-result", r.URL.Path)
+
+		b, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+
+		var data map[string]interface{}
+		assert.NoError(t, json.Unmarshal(b, &data))
+		assert.Equal(t, "11111111-2222-3333-4444-555555555555", data["setup_id"])
+		assert.Equal(t, true, data["successful"])
+		assert.EqualValues(t, 1200, data["duration_ms"])
+		assert.Equal(t, "", data["error_code"])
+
+		rw.WriteHeader(http.StatusNoContent)
+	})
+
+	err := c.SendSetupApplyResult(context.Background(), "abc-uuid", SetupApplyResultRequest{
+		SetupID:    "11111111-2222-3333-4444-555555555555",
+		Successful: true,
+		DurationMs: 1200,
+	})
+	assert.NoError(t, err)
+}
+
+// TestSendSetupApplyResultRetriesOnFailure ensures one transient panel
+// error is absorbed by the single allowed retry and the code survives it.
+func TestSendSetupApplyResultRetriesOnFailure(t *testing.T) {
+	attempts := 0
+	var last map[string]interface{}
+	c, server := createTestClient(func(rw http.ResponseWriter, r *http.Request) {
+		attempts++
+		b, err := io.ReadAll(r.Body)
+		assert.NoError(t, err)
+		assert.NoError(t, json.Unmarshal(b, &last))
+		if attempts == 1 {
+			rw.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		rw.WriteHeader(http.StatusNoContent)
+	})
+	defer server.Close()
+
+	err := c.SendSetupApplyResult(context.Background(), "abc-uuid", SetupApplyResultRequest{
+		SetupID:    "11111111-2222-3333-4444-555555555555",
+		Successful: false,
+		Error:      "failed to stop the server",
+		ErrorCode:  "stop_failed",
+	})
+	assert.NoError(t, err)
+	assert.Equal(t, 2, attempts)
+	assert.Equal(t, "stop_failed", last["error_code"])
+}

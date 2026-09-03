@@ -289,6 +289,8 @@ type SystemConfiguration struct {
 
 	ModpackInstall ModpackInstall `json:"modpack_install" yaml:"modpack_install"`
 
+	SetupApply SetupApply `json:"setup_apply" yaml:"setup_apply"`
+
 	OpenatMode string `default:"auto" yaml:"openat_mode"`
 }
 
@@ -348,6 +350,13 @@ type Transfers struct {
 type ModpackInstall struct {
 	MaxConcurrent  int `default:"3" json:"max_concurrent" yaml:"max_concurrent"`
 	TimeoutMinutes int `default:"30" json:"timeout_minutes" yaml:"timeout_minutes"`
+}
+
+// SetupApply bounds the native guided setup launch job added by the SGH
+// fork: how long one stop, apply, start attempt may take before its
+// context is cancelled. The panel's watchdog fires at twice this.
+type SetupApply struct {
+	TimeoutMinutes int `default:"5" json:"timeout_minutes" yaml:"timeout_minutes"`
 }
 
 type ConsoleThrottles struct {
