@@ -218,8 +218,9 @@ Every SGH modification MUST be registered here before its work is considered com
   Upstream only deleted the files when the panel status call also failed, and its early return on that error left the server marked as transferring forever.
   `postTransfers` claims an atomic per-server reservation before creating any transfer state, holds it until the finalizer has completely settled the transfer, and rejects reserved, in-flight, and already-hosted servers with a logged HTTP 409.
   The reservation also spans the installer's panel round trip and the cleanup itself, closing the concurrent-duplicate and mid-cleanup replay windows around the destructive file removal.
+  On the outgoing side (`router_server_transfer.go`), the `OperationTransfer` reservation claimed before pushing the archive is deliberately never released on the success path: the data has moved to the destination node, so the stale source copy refuses further install, restore, or power admission until the panel deletes it or Wings restarts and resets in-memory reservations.
 - Why: every ordinarily failed or interrupted transfer orphaned the server's full data directory on the destination node with nothing left to clean it up, leaking disk fleet-wide (upstream issue pterodactyl/panel#5555, upstream PR pterodactyl/wings#298).
-- Files: `router/router_transfer.go`, `router/router_transfer_test.go`.
+- Files: `router/router_transfer.go`, `router/router_server_transfer.go`, `router/router_transfer_test.go`.
 - Conflict risk on rebase: low-medium; the deferred body is upstream-owned, so re-apply the extraction if upstream restructures `postTransfers`.
 
 ### router: report failed transfer creation with the token UUID
