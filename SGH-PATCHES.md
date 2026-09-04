@@ -41,7 +41,7 @@ Every SGH modification MUST be registered here before its work is considered com
 ### ci: sgh branch triggers, upstream watch, govulncheck
 
 - What: `push.yaml`, `release.yaml`, and CodeQL target the `sgh` branch and SGH release tags.
-  The build, Dockerfile, vulnerability scan, and release jobs all use Go 1.25.14.
+  The build, Dockerfile, vulnerability scan, and release jobs all use Go 1.26.8.
   Third-party workflow actions and govulncheck v1.7.0 are pinned rather than floating by major tag or `latest`.
   CI enforces formatting, vet, normal tests, race tests, and both release architectures.
   Release builds strip the leading `v` before embedding `system.Version`, produce checksums, and only run for `v*-sgh.*` tags.
@@ -55,9 +55,10 @@ Every SGH modification MUST be registered here before its work is considered com
 
 ### deps: security updates (govulncheck)
 
-- What: toolchain go1.24.1 -> go1.25.14.
+- What: toolchain go1.24.1 -> go1.25.14, then go1.25.14 -> go1.26.8 on 2026-09-04.
   The `go` line was raised from 1.23.0 to 1.25.0 by `go mod tidy`, which the new dependency graph requires.
-  `golang.org/x/crypto` moved from v0.41.0 to v0.55.0.
+  It was raised again to 1.26.0 because `golang.org/x/crypto` v0.56.0 declares that minimum.
+  `golang.org/x/crypto` moved from v0.41.0 to v0.55.0, then to v0.56.0.
   `golang.org/x/net` moved from v0.42.0 to v0.57.0.
   `golang.org/x/text` moved from v0.28.0 to v0.41.0.
   `github.com/ulikunitz/xz` moved from v0.5.14 to v0.5.15.
@@ -66,6 +67,8 @@ Every SGH modification MUST be registered here before its work is considered com
   No Go 1.24 release fixes those standard-library findings because that release line has left its security-support window.
   Go 1.25.14 cleared every reachable standard-library finding.
   The 2026-08-30 audit also caught `GO-2026-6303` in the SSH server path and fixed it by upgrading `golang.org/x/crypto` to v0.55.0.
+  On 2026-09-03 the scan flagged `GO-2026-6354` and `GO-2026-6355`, two SSH channel deadlock denial-of-service bugs reachable through the SFTP server.
+  Both are fixed in `golang.org/x/crypto` v0.56.0, which requires Go 1.26, so the toolchain moved to go1.26.8 (Go 1.25 had also left its security-support window).
   The current pinned scan reports only the two documented Moby exceptions below.
 - Not fixed (BLOCKED): `github.com/docker/docker` v28.3.3+incompatible still trips `GO-2026-4887` and `GO-2026-4883`.
   These are the Moby AuthZ oversized-body bypass and plugin-privilege off-by-one issues.
