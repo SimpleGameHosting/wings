@@ -16,8 +16,18 @@ import (
 var versionCleanDirs = []string{"libraries", "mods", "coremods", ".fabric", ".neoforge"}
 
 // versionCleanFiles are the root-level loader files the version profile
-// removes alongside versionCleanDirs.
-var versionCleanFiles = []string{"user_jvm_args.txt", "server.jar", "unix_args.txt", "run.sh", "run.bat"}
+// removes alongside versionCleanDirs. The Forge/NeoForge installer and its
+// log are included because an egg install that dies before its own cleanup
+// line strands them at the root, and finalize refuses to run past one.
+var versionCleanFiles = []string{
+	"user_jvm_args.txt",
+	"server.jar",
+	"unix_args.txt",
+	"run.sh",
+	"run.bat",
+	installerJarName,
+	installerJarName + ".log",
+}
 
 // versionCleanJarPrefixes are root-level jar name prefixes left behind by
 // loader installers of any era. The list is kept exactly as the legacy egg

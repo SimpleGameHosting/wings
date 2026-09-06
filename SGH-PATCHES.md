@@ -324,3 +324,12 @@ Every SGH modification MUST be registered here before its work is considered com
 - Why: the comment contradicted the struct tag after the SGH default change.
 - Files: `config/config.go`.
 - Conflict risk on rebase: low; comment only, adjacent to the existing one-value SGH default.
+
+### modpackinstall: version clean sweeps a stranded loader installer
+
+- What: the version clean profile now deletes root `installer.jar` and `installer.jar.log` alongside the other loader files it already removes.
+- Why: a NeoForge or Forge egg install that dies between downloading its installer and its own `rm -f installer.jar` line strands the file at the root, and the version profile only swept prefixed loader jars, so the next native version install hit the finalize guard and failed with `finalize_failed` ("installer.jar present, Wings never runs Java").
+  Seen in production on 2026-09-05 after an invalid `NEOFORGE_VERSION_OVERRIDE` saved a 404 page as `installer.jar`.
+  The legacy version installer script deleted both files itself, so this restores parity without touching any customer file.
+- Files: `internal/modpackinstall/clean.go`, `internal/modpackinstall/clean_test.go`.
+- Conflict risk on rebase: none; both files are SGH-owned.
