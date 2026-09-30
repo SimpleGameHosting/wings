@@ -279,6 +279,33 @@ func TestModpackInstallInvalidPayloadReturns400(t *testing.T) {
 	}
 }
 
+// TestModpackInstallRejectsMisusedWipeFlag pins the wire name and type of
+// the destructive wipe flag: the panel's "wipe" key must reach validation,
+// which refuses it on a modpack install, and a flag that is not a real
+// JSON boolean must never be coerced into a wipe.
+func TestModpackInstallRejectsMisusedWipeFlag(t *testing.T) {
+	bodies := map[string]string{
+		"wipe on a modpack": fmt.Sprintf(`{"install_id":%q,"kind":"modpack","download_url":"http://example.com/pack.tar.gz","wipe":true}`, uuid.NewString()),
+		"wipe as a string":  fmt.Sprintf(`{"install_id":%q,"kind":"version","version_type":"paper","archive_format":"jar","download_url":"http://example.com/paper.jar","wipe":"true"}`, uuid.NewString()),
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			fixture := newModpackInstallFixture(t, 2)
+			s := fixture.newServer(t, testModpackInstallServerID)
+			c, recorder := fixture.newContext(t, s, body)
+
+			postServerModpackInstall(c)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d body %s", recorder.Code, recorder.Body.String())
+			}
+			if id := s.ActiveModpackInstallID(); id != "" {
+				t.Fatalf("expected no install to become active, got %q", id)
+			}
+		})
+	}
+}
+
 // TestModpackInstallAcceptsValidRequestAndTracksLifecycle covers case 2: a
 // valid request against an idle server is accepted, the install_id becomes
 // active immediately, and it clears again once the job finishes.

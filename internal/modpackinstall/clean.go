@@ -36,15 +36,19 @@ var versionCleanFiles = []string{
 var versionCleanJarPrefixes = []string{"forge-", "fabric-", "paper-", "purpur-", "spigot-", "velocity-", "bungeecord-", "waterfall-"}
 
 // Clean prepares a server's root directory for an install. A modpack install
-// gets a full wipe since the archive owns the entire tree; a version install
-// only loses the previous loader's files so configs and world data survive.
-// Both profiles always sweep the fixed install artifacts so a crashed
-// earlier attempt cannot strand disk usage or stale bytes.
-func Clean(fs *filesystem.Filesystem, kind Kind) error {
+// gets a full wipe since the archive owns the entire tree. A version install
+// gets the same full wipe only when the customer explicitly asked for one;
+// otherwise it only loses the previous loader's files so configs and world
+// data survive. Both profiles always sweep the fixed install artifacts so a
+// crashed earlier attempt cannot strand disk usage or stale bytes.
+func Clean(fs *filesystem.Filesystem, kind Kind, wipe bool) error {
 	switch kind {
 	case KindModpack:
 		return cleanEverything(fs)
 	case KindVersion:
+		if wipe {
+			return cleanEverything(fs)
+		}
 		return cleanVersionProfile(fs)
 	default:
 		return errors.Errorf("modpackinstall: unknown kind %q", kind)

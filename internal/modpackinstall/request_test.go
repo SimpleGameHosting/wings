@@ -19,6 +19,8 @@ func TestRequestValidate(t *testing.T) {
 		{"valid modpack", func(r *Request) {}, false},
 		{"valid version jar", func(r *Request) { r.Kind = KindVersion; r.VersionType = "paper"; r.ArchiveFormat = "jar" }, false},
 		{"valid version archive", func(r *Request) { r.Kind = KindVersion; r.VersionType = "forge" }, false},
+		{"valid version wipe", func(r *Request) { r.Kind = KindVersion; r.VersionType = "forge"; r.Wipe = true }, false},
+		{"modpack with wipe rejected", func(r *Request) { r.Wipe = true }, true},
 		{"missing install id", func(r *Request) { r.InstallID = "" }, true},
 		{"non-uuid install id", func(r *Request) { r.InstallID = "not-a-uuid" }, true},
 		{"unknown kind", func(r *Request) { r.Kind = "banana" }, true},

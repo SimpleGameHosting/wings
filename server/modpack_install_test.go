@@ -3,8 +3,15 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +19,9 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pterodactyl/wings/config"
+	"github.com/pterodactyl/wings/environment"
 	"github.com/pterodactyl/wings/internal/modpackinstall"
+	"github.com/pterodactyl/wings/internal/ufs"
 	"github.com/pterodactyl/wings/remote"
 )
 
@@ -133,5 +142,176 @@ func TestFinishModpackInstallReportsTheResultWithABoundedContext(t *testing.T) {
 	}
 	if report.err != nil {
 		t.Fatalf("the result report context was already done: %v", report.err)
+	}
+}
+
+// modpackInstallPipelineClient answers the configuration sync the pipeline
+// performs and captures the terminal result, so a whole install attempt
+// can run against a real temp filesystem without a panel behind it.
+type modpackInstallPipelineClient struct {
+	remote.Client
+
+	settings json.RawMessage
+	results  chan remote.ModpackInstallResultRequest
+}
+
+func (c modpackInstallPipelineClient) GetServerConfiguration(_ context.Context, _ string) (remote.ServerConfigurationResponse, error) {
+	return setupApplyServerConfiguration(c.settings), nil
+}
+
+func (c modpackInstallPipelineClient) SendModpackInstallResult(_ context.Context, _ string, data remote.ModpackInstallResultRequest) error {
+	c.results <- data
+	return nil
+}
+
+// runJarVersionInstall runs one complete jar-format version install,
+// optionally wiping, against a server whose root already holds a world, a
+// config, and the previous version's files, and returns the server and
+// the result the panel would receive.
+func runJarVersionInstall(t *testing.T, wipe bool) (*Server, remote.ModpackInstallResultRequest) {
+	t.Helper()
+
+	previous := config.Get()
+	next := *previous
+	next.System.Data = t.TempDir()
+	next.System.User.Uid = os.Getuid()
+	next.System.User.Gid = os.Getgid()
+	next.System.ModpackInstall.TimeoutMinutes = 1
+	config.Set(&next)
+	t.Cleanup(func() { config.Set(previous) })
+
+	settings := json.RawMessage(fmt.Sprintf(`{"uuid":%q}`, uuid.NewString()))
+	client := modpackInstallPipelineClient{settings: settings, results: make(chan remote.ModpackInstallResultRequest, 1)}
+	s, err := NewEmptyManager(client).InitServer(setupApplyServerConfiguration(settings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(s.CtxCancel)
+	s.Environment = &setupApplyTestEnvironment{
+		started: make(chan struct{}, 1),
+		state:   environment.ProcessOfflineState,
+		config:  environment.NewConfiguration(environment.Settings{}, nil),
+	}
+
+	for name, content := range map[string]string{
+		"world/level.dat":   "world",
+		"server.properties": "motd=keep",
+		"server.jar":        "old version",
+		"unix_args.txt":     "@libraries/net/minecraftforge/forge/26.2/unix_args.txt",
+	} {
+		if err := s.Filesystem().Write(name, strings.NewReader(content), int64(len(content)), 0o644); err != nil {
+			t.Fatalf("seed %q: %v", name, err)
+		}
+	}
+
+	jar := []byte("new version")
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Length", strconv.Itoa(len(jar)))
+		_, _ = w.Write(jar)
+	}))
+	t.Cleanup(cdn.Close)
+
+	req := modpackinstall.Request{
+		InstallID:     uuid.NewString(),
+		Kind:          modpackinstall.KindVersion,
+		DownloadURL:   cdn.URL + "/paper/26.3.jar",
+		ArchiveFormat: modpackinstall.FormatJar,
+		VersionType:   modpackinstall.VersionPaper,
+		Wipe:          wipe,
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	if repeat, err := s.AdmitModpackInstall(req.InstallID); err != nil || repeat {
+		t.Fatalf("admit: repeat=%v err=%v", repeat, err)
+	}
+
+	s.RunModpackInstall(req, func() {})
+
+	return s, <-client.results
+}
+
+// readServerFile returns a file's content from the server root, or fails
+// the test when it cannot be read.
+func readServerFile(t *testing.T, s *Server, name string) string {
+	t.Helper()
+
+	f, _, err := s.Filesystem().File(name)
+	if err != nil {
+		t.Fatalf("open %q: %v", name, err)
+	}
+	defer f.Close()
+	var b strings.Builder
+	if _, err := io.Copy(&b, f); err != nil {
+		t.Fatalf("read %q: %v", name, err)
+	}
+	return b.String()
+}
+
+// serverFileExists reports whether name is present at the server root.
+func serverFileExists(t *testing.T, s *Server, name string) bool {
+	t.Helper()
+
+	_, err := s.Filesystem().UnixFS().Lstat(name)
+	if err == nil {
+		return true
+	}
+	if !errors.Is(err, ufs.ErrNotExist) {
+		t.Fatalf("stat %q: %v", name, err)
+	}
+	return false
+}
+
+// TestRunModpackInstallVersionWithoutWipeKeepsTheWorld pins the default: a
+// version install replaces the loader but never touches worlds or configs.
+func TestRunModpackInstallVersionWithoutWipeKeepsTheWorld(t *testing.T) {
+	s, result := runJarVersionInstall(t, false)
+
+	if !result.Successful {
+		t.Fatalf("install failed: %+v", result)
+	}
+	if got := readServerFile(t, s, "world/level.dat"); got != "world" {
+		t.Fatalf("world/level.dat = %q, want it untouched", got)
+	}
+	if got := readServerFile(t, s, "server.properties"); got != "motd=keep" {
+		t.Fatalf("server.properties = %q, want it untouched", got)
+	}
+	if got := readServerFile(t, s, "server.jar"); got != "new version" {
+		t.Fatalf("server.jar = %q, want the new version", got)
+	}
+	if serverFileExists(t, s, "unix_args.txt") {
+		t.Fatal("the previous loader's unix_args.txt survived the install")
+	}
+}
+
+// TestRunModpackInstallVersionWithWipeRemovesEverythingElse proves a wipe
+// requested by the panel reaches the clean stage: afterwards the root holds
+// only what the install itself produced.
+func TestRunModpackInstallVersionWithWipeRemovesEverythingElse(t *testing.T) {
+	s, result := runJarVersionInstall(t, true)
+
+	if !result.Successful {
+		t.Fatalf("install failed: %+v", result)
+	}
+	for _, name := range []string{"world", "server.properties", "unix_args.txt"} {
+		if serverFileExists(t, s, name) {
+			t.Errorf("%q survived a wipe", name)
+		}
+	}
+	if got := readServerFile(t, s, "server.jar"); got != "new version" {
+		t.Fatalf("server.jar = %q, want the new version", got)
+	}
+
+	entries, err := s.Filesystem().ReadDir("/")
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	var names []string
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	sort.Strings(names)
+	if strings.Join(names, ",") != "eula.txt,server.jar" {
+		t.Fatalf("root after wipe = %v, want only eula.txt and server.jar", names)
 	}
 }

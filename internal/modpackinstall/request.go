@@ -56,6 +56,10 @@ const (
 )
 
 // Request is the wire payload of POST /api/servers/:server/modpack-install.
+// Wipe asks a version install to delete every file at the server root
+// before installing, worlds and configs included, instead of only the
+// previous loader's files. It is omitted, and so false, unless the customer
+// explicitly chose to wipe.
 type Request struct {
 	InstallID     string      `json:"install_id"`
 	Kind          Kind        `json:"kind"`
@@ -64,6 +68,7 @@ type Request struct {
 	VersionType   VersionType `json:"version_type"`
 	ModpackID     string      `json:"modpack_id"`
 	VersionID     string      `json:"version_id"`
+	Wipe          bool        `json:"wipe"`
 }
 
 // Validate rejects anything the pipeline is not written to handle. Unknown
@@ -90,6 +95,12 @@ func (r *Request) Validate() error {
 	// the jar format is refused here rather than quietly ignored...
 	if r.Kind == KindModpack && r.ArchiveFormat == FormatJar {
 		return errors.Errorf("modpackinstall: archive_format %q is only valid for kind=%q", FormatJar, KindVersion)
+	}
+
+	// A modpack install always wipes the whole root, so a wipe flag on one
+	// means the caller misunderstands the contract and is refused...
+	if r.Kind == KindModpack && r.Wipe {
+		return errors.Errorf("modpackinstall: wipe is only valid for kind=%q", KindVersion)
 	}
 
 	if r.Kind == KindVersion {

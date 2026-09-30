@@ -247,7 +247,7 @@ Every SGH modification MUST be registered here before its work is considered com
   The legacy installer and power actions now claim the same reservation one layer deeper, `InstallationProcess.Run` and `claimPowerOperation` after the power lock, closing the same race window; both already answer their initial request with a 202 before doing the real work in a background goroutine, so a lost race there is logged rather than returned synchronously, and `OperationInstall` is shared between the legacy installer and the new native route so the two can never run concurrently on one server.
   Adds the `internal/modpackinstall` package: validated request and kind/version-type enums, clean profiles mirrored from the legacy egg script, a hardened exact-length download, staged extraction and settle into the server root, and the finalize rules; it never imports package server so it unit-tests in isolation.
   Finalize ports the tail both live egg scripts share, as pinned by panel migration `2026_03_03_000001_fix_forge_21_unix_args`: Forge 1.21+ ships a root `server.jar` bootstrap and is left untouched, Forge 1.17-1.20 gets root `unix_args.txt` symlinked into the installed version, a pre-1.17 layout has its single root `forge-*.jar` renamed to `server.jar`, NeoForge always just gets the symlink, and a stray `installer.jar` fails the install for both kinds because Wings never runs Java.
-  Adds `POST /api/servers/:server/modpack-install`, which admits a job in this order: an exact repeat of an `install_id` this server has already admitted, either the one still running or the one that finished most recently, is answered again without starting a second job, then the request is validated, then the server's exclusive operation is claimed, then the node-wide install slot is reserved, unwinding the operation claim if the slot is full.
+  Adds `POST /api/servers/:server/modpack-install`, which admits a job in this order: the request is validated, then an exact repeat of an `install_id` this server has already admitted, either the one still running or the one that finished most recently, is answered again without starting a second job, otherwise the server's exclusive operation is claimed, then the node-wide install slot is reserved, unwinding the operation claim if the slot is full.
   The handler itself records the admitted `install_id` before spawning the job, and the job's finisher retires it inside the same critical section that ends the operation reservation, so the identity is observable the instant the 202 is written and never disagrees with the reservation.
   The job reports progress over the existing per-server websocket as `"modpack install status"` and `"modpack install progress"` (`server/events.go`) and posts its terminal outcome to the panel through the new remote callback `SendModpackInstallResult`, `POST /api/remote/servers/{uuid}/modpack-install-result`.
   A failed attempt carries a stable `error_code` next to its sanitized message on both the terminal event and the callback, one of `stop_failed`, `sync_failed`, `clean_failed`, `download_failed`, `extract_failed`, `finalize_failed`, `timeout`, or `internal_error`, so the panel branches on the code instead of the message text.
@@ -333,3 +333,18 @@ Every SGH modification MUST be registered here before its work is considered com
   The legacy version installer script deleted both files itself, so this restores parity without touching any customer file.
 - Files: `internal/modpackinstall/clean.go`, `internal/modpackinstall/clean_test.go`.
 - Conflict risk on rebase: none; both files are SGH-owned.
+
+### modpackinstall: opt-in full wipe for version installs
+
+- What: the native install request gains a `wipe` boolean.
+  When it is true on a `kind=version` install, the clean stage deletes every root entry, the same profile a modpack install always runs, instead of only the previous loader's files.
+  It is false when omitted, so an existing caller keeps the preserve-configs version profile.
+  Validation refuses `wipe` on a `kind=modpack` install.
+  A string or number fails JSON binding, and `null` or an omitted key means no wipe, so nothing is ever coerced into one.
+  The clean stage now logs the install id, kind, and wipe flag before it deletes anything.
+- Why: the panel's "Wipe and install" option on the Versions tab was logged and ignored on the native path because the job spec had no way to ask for a full wipe (Linear PAN-36).
+  Modpack installs are unchanged.
+- Rollout: deploy this build to every node before the panel starts sending `wipe`.
+  An older build ignores the unknown key and runs the preserve-configs profile, so a requested wipe would silently not happen.
+- Files: `internal/modpackinstall/clean.go`, `internal/modpackinstall/clean_test.go`, `internal/modpackinstall/request.go`, `internal/modpackinstall/request_test.go`, `router/router_server_modpackinstall_test.go`, `server/modpack_install.go`, `server/modpack_install_test.go`.
+- Conflict risk on rebase: none; every touched file is SGH-owned.

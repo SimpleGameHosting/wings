@@ -231,8 +231,14 @@ func (s *Server) runModpackInstallPipeline(ctx context.Context, req modpackinsta
 		return err
 	}
 
+	// Deleting customer files is the one irreversible step of an install, so
+	// record exactly which profile ran against which attempt...
 	status("cleaning")
-	if err := modpackinstall.Clean(s.Filesystem(), req.Kind); err != nil {
+	s.Log().WithField("install_id", req.InstallID).
+		WithField("kind", req.Kind).
+		WithField("wipe", req.Wipe).
+		Info("modpack install: cleaning the server directory")
+	if err := modpackinstall.Clean(s.Filesystem(), req.Kind, req.Wipe); err != nil {
 		// Unlike the other modpackinstall calls below, Clean returns bare
 		// filesystem errors with no stage context of their own, so wrap
 		// here rather than propagating it unlabeled; nothing about the
