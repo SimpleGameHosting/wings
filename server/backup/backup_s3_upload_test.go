@@ -247,15 +247,22 @@ func TestUploadPartsRetriesAPartWithItsFullBytes(t *testing.T) {
 // uploading are cancelled instead of tying up the node's slots and bandwidth.
 func TestUploadPartsCancelsTheOtherPartsWhenOneFails(t *testing.T) {
 	s3 := newFakeS3(t)
-	cancelled := make(chan struct{}, 4)
+	othersArrived := make(chan struct{}, 2)
+	cancelled := make(chan int, 2)
 	s3.handle = func(w http.ResponseWriter, r *http.Request, part int, body []byte) {
 		if part == 1 {
+			// Refuse part 1 only once parts 2 and 3 are uploading, so the failure has
+			// in-flight parts to cancel rather than parts that never started.
+			for range 2 {
+				<-othersArrived
+			}
 			http.Error(w, "access denied", http.StatusForbidden)
 			return
 		}
+		othersArrived <- struct{}{}
 		select {
 		case <-r.Context().Done():
-			cancelled <- struct{}{}
+			cancelled <- part
 		case <-time.After(10 * time.Second):
 			s3.accept(w, part, body)
 		}
@@ -270,8 +277,16 @@ func TestUploadPartsCancelsTheOtherPartsWhenOneFails(t *testing.T) {
 	if elapsed := time.Since(started); elapsed > 5*time.Second {
 		t.Fatalf("expected the failure to stop the other parts promptly, took %s", elapsed)
 	}
-	if len(cancelled) != 2 {
-		t.Fatalf("expected parts 2 and 3 to be cancelled, got %d cancellations", len(cancelled))
+	// The server notices a dropped request shortly after the client gives up on it.
+	for range 2 {
+		select {
+		case <-cancelled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected parts 2 and 3 to be cancelled on the server")
+		}
+	}
+	if s3.part(2) != nil || s3.part(3) != nil {
+		t.Fatal("expected parts 2 and 3 never to be stored")
 	}
 }
 
