@@ -73,14 +73,14 @@ type SftpConfiguration struct {
 
 // ResumableUploadConfiguration defines the hard resource boundaries applied to browser upload sessions.
 type ResumableUploadConfiguration struct {
-	MaxActiveSessionsPerUser    int   `default:"8" json:"max_active_sessions_per_user" yaml:"max_active_sessions_per_user"`
+	MaxActiveSessionsPerUser    int   `default:"16" json:"max_active_sessions_per_user" yaml:"max_active_sessions_per_user"`
 	MaxActiveSessionsPerServer  int   `default:"32" json:"max_active_sessions_per_server" yaml:"max_active_sessions_per_server"`
 	MaxActiveSessionsNode       int   `default:"1024" json:"max_active_sessions_node" yaml:"max_active_sessions_node"`
 	MaxStoredSessionsNode       int   `default:"16384" json:"max_stored_sessions_node" yaml:"max_stored_sessions_node"`
 	MaxMetadataBytes            int64 `default:"67108864" json:"max_metadata_bytes" yaml:"max_metadata_bytes"`
 	MaxPathBytes                int   `default:"4096" json:"max_path_bytes" yaml:"max_path_bytes"`
 	MaxFilenameBytes            int   `default:"255" json:"max_filename_bytes" yaml:"max_filename_bytes"`
-	CreationRatePerMinuteUser   int   `default:"10" json:"creation_rate_per_minute_user" yaml:"creation_rate_per_minute_user"`
+	CreationRatePerMinuteUser   int   `default:"60" json:"creation_rate_per_minute_user" yaml:"creation_rate_per_minute_user"`
 	CreationRatePerMinuteServer int   `default:"60" json:"creation_rate_per_minute_server" yaml:"creation_rate_per_minute_server"`
 	CreationRatePerMinuteNode   int   `default:"600" json:"creation_rate_per_minute_node" yaml:"creation_rate_per_minute_node"`
 	RequestRatePerMinuteUser    int   `default:"600" json:"request_rate_per_minute_user" yaml:"request_rate_per_minute_user"`

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -601,6 +602,11 @@ func TestResumableUploadEnforcesActiveSessionCaps(t *testing.T) {
 	handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected second active session to return 429, got %d body %s", recorder.Code, recorder.Body.String())
+	}
+	// The usual cause is this user's own unfinished uploads, not a full node,
+	// so the customer is told what they can do about it.
+	if !strings.Contains(recorder.Body.String(), "unfinished uploads") {
+		t.Fatalf("expected the session cap to explain unfinished uploads, got body %s", recorder.Body.String())
 	}
 }
 

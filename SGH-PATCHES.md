@@ -348,3 +348,14 @@ Every SGH modification MUST be registered here before its work is considered com
   An older build ignores the unknown key and runs the preserve-configs profile, so a requested wipe would silently not happen.
 - Files: `internal/modpackinstall/clean.go`, `internal/modpackinstall/clean_test.go`, `internal/modpackinstall/request.go`, `internal/modpackinstall/request_test.go`, `router/router_server_modpackinstall_test.go`, `server/modpack_install.go`, `server/modpack_install_test.go`.
 - Conflict risk on rebase: none; every touched file is SGH-owned.
+
+### files: resumable upload limits sized for bulk mod drops
+
+- What: raises the `api.resumable_uploads` defaults `creation_rate_per_minute_user` from 10 to 60 and `max_active_sessions_per_user` from 8 to 16.
+  The per-user active-session refusal now reads "Too many unfinished uploads on this server. Finish or cancel some of them, then try again." instead of blaming the node.
+- Why: customers drop hundreds of mod jars at once, and 10 new sessions per minute made a 300-file drop take half an hour even with the panel's upload queue pacing requests.
+  60 per minute matches the panel's upload URL throttle of 120 per minute at two URL requests per file.
+  The session cap refusal is usually caused by the customer's own unfinished uploads, so the old wording pointed at the wrong fix.
+- Files: `config/config.go`, `router/router_server_upload.go`, `router/router_server_upload_test.go`.
+- Rollout: Wings writes its resolved config back to `config.yml` on boot, so existing nodes keep their old values until `playbooks/pterodactyl/wings_upload_limits.yml` raises them.
+- Conflict risk on rebase: none; both values and the message are SGH-owned.

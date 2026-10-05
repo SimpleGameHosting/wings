@@ -372,7 +372,9 @@ func captureUploadError(c *gin.Context, err error) {
 	case errors.Is(err, server.ErrUploadConflict):
 		abortUploadRequest(c, http.StatusConflict, "Another active upload already targets this file.")
 	case errors.Is(err, server.ErrUploadLimitReached):
-		abortUploadRequest(c, http.StatusTooManyRequests, "This node has reached its resumable upload session limit.")
+		// The usual cause is the user's own unfinished uploads on this server, not a
+		// full node, so the message says what the customer can do about it.
+		abortUploadRequest(c, http.StatusTooManyRequests, "Too many unfinished uploads on this server. Finish or cancel some of them, then try again.")
 	case errors.As(err, &rateLimitError):
 		retryAfter := int64((rateLimitError.RetryAfter + time.Second - 1) / time.Second)
 		if retryAfter < 1 {
