@@ -107,7 +107,11 @@ func (b *Backup) validateIdentifier() error {
 	if err != nil {
 		return err
 	}
-	b.Uuid = identifier
+	// Details validates from two goroutines at once, so the identifier is only written
+	// when normalizing changed it; once normalized, validation is read-only.
+	if b.Uuid != identifier {
+		b.Uuid = identifier
+	}
 	return nil
 }
 

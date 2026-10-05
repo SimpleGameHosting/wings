@@ -6,13 +6,15 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"strconv"
+	"sync"
 	"time"
 
 	"emperror.dev/errors"
+	"github.com/apex/log"
 	"github.com/cenkalti/backoff/v4"
 	"github.com/juju/ratelimit"
 	"github.com/mholt/archives"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/pterodactyl/wings/config"
 	"github.com/pterodactyl/wings/remote"
@@ -68,13 +70,13 @@ func (s *S3Backup) Generate(ctx context.Context, fsys *filesystem.Filesystem, ig
 	}
 	s.log().Info("created backup successfully")
 
-	rc, err := os.Open(s.Path())
+	archive, err := os.Open(s.Path())
 	if err != nil {
 		return nil, errors.Wrap(err, "backup: could not read archive from disk")
 	}
-	defer rc.Close()
+	defer archive.Close()
 
-	parts, err := s.generateRemoteRequest(ctx, rc)
+	parts, err := s.generateRemoteRequest(ctx, archive)
 	if err != nil {
 		return nil, err
 	}
@@ -113,10 +115,9 @@ func (s *S3Backup) Restore(ctx context.Context, r io.Reader, callback RestoreCal
 	return nil
 }
 
-// Generates the remote S3 request and begins the upload.
-func (s *S3Backup) generateRemoteRequest(ctx context.Context, rc io.ReadCloser) ([]remote.BackupPart, error) {
-	defer rc.Close()
-
+// generateRemoteRequest asks the Panel for presigned part URLs and uploads the
+// archive to them within this node's shared upload limits.
+func (s *S3Backup) generateRemoteRequest(ctx context.Context, archive io.ReaderAt) ([]remote.BackupPart, error) {
 	s.log().Debug("attempting to get size of backup...")
 	size, err := s.Backup.Size()
 	if err != nil {
@@ -132,56 +133,138 @@ func (s *S3Backup) generateRemoteRequest(ctx context.Context, rc io.ReadCloser) 
 	s.log().Debug("got S3 upload urls from the Panel")
 	s.log().WithField("parts", len(urls.Parts)).Info("attempting to upload backup to s3 endpoint...")
 
-	uploader := newS3FileUploader(rc)
-	for i, part := range urls.Parts {
-		// Get the size for the current part.
-		var partSize int64
-		if i+1 < len(urls.Parts) {
-			partSize = urls.PartSize
-		} else {
-			// This is the remaining size for the last part,
-			// there is not a minimum size limit for the last part.
-			partSize = size - (int64(i) * urls.PartSize)
-		}
+	// Each attempt at a part gets two hours. The node's speed limit is shared by at most
+	// UploadConcurrency parts, so even a 5 GiB part has a wide margin at 80 MiB/s.
+	client := &http.Client{Timeout: time.Hour * 2}
 
-		// Attempt to upload the part.
-		etag, err := uploader.uploadPart(ctx, part, partSize)
-		if err != nil {
-			s.log().WithField("part_id", i+1).WithError(err).Warn("failed to upload part")
-			return nil, err
-		}
-		uploader.uploadedParts = append(uploader.uploadedParts, remote.BackupPart{
-			ETag:       etag,
-			PartNumber: i + 1,
-		})
-		s.log().WithField("part_id", i+1).Info("successfully uploaded backup part")
+	parts, err := uploadParts(ctx, client, nodeUploadLimits(), archive, urls, size, s.log())
+	if err != nil {
+		return nil, err
 	}
 	s.log().WithField("parts", len(urls.Parts)).Info("backup has been successfully uploaded")
 
-	return uploader.uploadedParts, nil
+	return parts, nil
 }
 
-type s3FileUploader struct {
-	io.ReadCloser
-	client        *http.Client
-	uploadedParts []remote.BackupPart
+// uploadLimits bound the S3 uploads of every backup on this node together, so that
+// several backups running at once share the port instead of each claiming all of it.
+type uploadLimits struct {
+	// slots holds one token per part that is currently uploading.
+	slots chan struct{}
+
+	// bucket caps the combined upload speed, or is nil when the speed is unlimited.
+	bucket *ratelimit.Bucket
 }
 
-// newS3FileUploader returns a new file uploader instance.
-func newS3FileUploader(file io.ReadCloser) *s3FileUploader {
-	return &s3FileUploader{
-		ReadCloser: file,
-		// We purposefully use a super high timeout on this request since we need to upload
-		// a 5GB file. This assumes at worst a 10Mbps connection for uploading. While technically
-		// you could go slower we're targeting mostly hosted servers that should have 100Mbps
-		// connections anyways.
-		client: &http.Client{Timeout: time.Hour * 2},
+var (
+	nodeUploadLimitsOnce sync.Once
+	nodeUploadLimitsInst *uploadLimits
+)
+
+// nodeUploadLimits returns the limits shared by every backup on this node, built from
+// the configuration the first time a backup uploads.
+func nodeUploadLimits() *uploadLimits {
+	nodeUploadLimitsOnce.Do(func() {
+		backups := config.Get().System.Backups
+		nodeUploadLimitsInst = newUploadLimits(backups.UploadConcurrency, backups.UploadLimit)
+	})
+
+	return nodeUploadLimitsInst
+}
+
+// newUploadLimits allows concurrency parts to upload at once, at no more than
+// limitMiB MiB/s combined. A concurrency below 1 uploads one part at a time, and a
+// limit below 1 leaves the speed unlimited.
+func newUploadLimits(concurrency int, limitMiB int) *uploadLimits {
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	limits := &uploadLimits{slots: make(chan struct{}, concurrency)}
+	if limitMiB > 0 {
+		rate := float64(limitMiB) * 1024 * 1024
+		limits.bucket = ratelimit.NewBucketWithRate(rate, int64(rate))
+	}
+
+	return limits
+}
+
+// acquire waits for a free upload slot and reports whether it got one. It never
+// holds a slot when ctx is already done, because select picks at random between a
+// free slot and a cancelled context, and a slot taken then would never be returned.
+func (l *uploadLimits) acquire(ctx context.Context) bool {
+	select {
+	case l.slots <- struct{}{}:
+		if ctx.Err() != nil {
+			<-l.slots
+			return false
+		}
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
-// backoff returns a new expoential backoff implementation using a context that
-// will also stop the backoff if it is canceled.
-func (fu *s3FileUploader) backoff(ctx context.Context) backoff.BackOffContext {
+// uploadParts uploads every part of the archive to its presigned URL, running as many
+// parts at once as the node has free slots. The first part that fails for good cancels
+// the others, since the backup cannot be completed without it.
+//
+// The returned parts are in part number order, as CompleteMultipartUpload expects.
+func uploadParts(
+	ctx context.Context,
+	client *http.Client,
+	limits *uploadLimits,
+	archive io.ReaderAt,
+	upload remote.BackupRemoteUploadResponse,
+	size int64,
+	logger *log.Entry,
+) ([]remote.BackupPart, error) {
+	parts := make([]remote.BackupPart, len(upload.Parts))
+	group, groupCtx := errgroup.WithContext(ctx)
+
+	for i, url := range upload.Parts {
+		number := i + 1
+		offset := int64(i) * upload.PartSize
+		length := upload.PartSize
+		if number == len(upload.Parts) {
+			// The last part holds whatever remains and has no minimum size.
+			length = size - offset
+		}
+
+		// Parts start in order as slots free up, so a failure stops the queue here.
+		if !limits.acquire(groupCtx) {
+			break
+		}
+
+		group.Go(func() error {
+			defer func() { <-limits.slots }()
+
+			etag, err := uploadPart(groupCtx, client, limits, url, io.NewSectionReader(archive, offset, length))
+			if err != nil {
+				logger.WithField("part_id", number).WithError(err).Warn("failed to upload part")
+				return err
+			}
+			parts[i] = remote.BackupPart{ETag: etag, PartNumber: number}
+			logger.WithField("part_id", number).Info("successfully uploaded backup part")
+
+			return nil
+		})
+	}
+
+	if err := group.Wait(); err != nil {
+		return nil, err
+	}
+	// The caller's context can end while parts are still queued for a slot, which
+	// stops the queue without any part reporting an error.
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	return parts, nil
+}
+
+// uploadBackoff returns an exponential backoff that also stops when ctx is cancelled.
+func uploadBackoff(ctx context.Context) backoff.BackOffContext {
 	b := backoff.NewExponentialBackOff()
 	b.Multiplier = 2
 	b.MaxElapsedTime = time.Minute
@@ -189,27 +272,28 @@ func (fu *s3FileUploader) backoff(ctx context.Context) backoff.BackOffContext {
 	return backoff.WithContext(b, ctx)
 }
 
-// uploadPart attempts to upload a given S3 file part to the S3 system. If a
-// 5xx error is returned from the endpoint this will continue with an exponential
-// backoff to try and successfully upload the part.
-//
-// Once uploaded the ETag is returned to the caller.
-func (fu *s3FileUploader) uploadPart(ctx context.Context, part string, size int64) (string, error) {
-	r, err := http.NewRequestWithContext(ctx, http.MethodPut, part, nil)
-	if err != nil {
-		return "", errors.Wrap(err, "backup: could not create request for S3")
-	}
-
-	r.ContentLength = size
-	r.Header.Add("Content-Length", strconv.Itoa(int(size)))
-	r.Header.Add("Content-Type", "application/x-gzip")
-
-	// Limit the reader to the size of the part.
-	r.Body = Reader{Reader: io.LimitReader(fu.ReadCloser, size)}
-
+// uploadPart uploads one part to its presigned URL and returns the ETag that S3
+// assigned to it. A 5xx response is retried with an exponential backoff, and every
+// attempt sends the whole part again from its first byte.
+func uploadPart(ctx context.Context, client *http.Client, limits *uploadLimits, url string, part *io.SectionReader) (string, error) {
 	var etag string
-	err = backoff.Retry(func() error {
-		res, err := fu.client.Do(r)
+	err := backoff.Retry(func() error {
+		if _, err := part.Seek(0, io.SeekStart); err != nil {
+			return backoff.Permanent(errors.Wrap(err, "backup: could not rewind archive part"))
+		}
+		var body io.Reader = part
+		if limits.bucket != nil {
+			body = ratelimit.Reader(part, limits.bucket)
+		}
+
+		r, err := http.NewRequestWithContext(ctx, http.MethodPut, url, io.NopCloser(body))
+		if err != nil {
+			return backoff.Permanent(errors.Wrap(err, "backup: could not create request for S3"))
+		}
+		r.ContentLength = part.Size()
+		r.Header.Add("Content-Type", "application/x-gzip")
+
+		res, err := client.Do(r)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 				return backoff.Permanent(err)
@@ -236,22 +320,13 @@ func (fu *s3FileUploader) uploadPart(ctx context.Context, part string, size int6
 		etag = res.Header.Get("ETag")
 
 		return nil
-	}, fu.backoff(ctx))
+	}, uploadBackoff(ctx))
 	if err != nil {
 		if v, ok := err.(*backoff.PermanentError); ok {
 			return "", v.Unwrap()
 		}
 		return "", err
 	}
+
 	return etag, nil
-}
-
-// Reader provides a wrapper around an existing io.Reader
-// but implements io.Closer in order to satisfy an io.ReadCloser.
-type Reader struct {
-	io.Reader
-}
-
-func (Reader) Close() error {
-	return nil
 }

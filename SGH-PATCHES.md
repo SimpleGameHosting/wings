@@ -359,3 +359,19 @@ Every SGH modification MUST be registered here before its work is considered com
 - Files: `config/config.go`, `router/router_server_upload.go`, `router/router_server_upload_test.go`.
 - Rollout: Wings writes its resolved config back to `config.yml` on boot, so existing nodes keep their old values until `playbooks/pterodactyl/wings_upload_limits.yml` raises them.
 - Conflict risk on rebase: none; both values and the message are SGH-owned.
+
+### backup: parallel S3 part uploads within node-wide limits
+
+- What: S3 backups upload their parts in parallel instead of one after another.
+  Two new `system.backups` options bound every backup on the node together: `upload_concurrency` (default 4) is how many parts upload at once, and `upload_limit` (default 80) caps their combined speed in MiB/s.
+  A concurrency below 1 uploads one part at a time, and a limit below 1 is unlimited.
+  Each part reads its own byte range of the archive, so parallel parts use no extra memory.
+  The first part that fails for good cancels the others, and the parts are still reported to the Panel in part number order.
+  A retried part now sends the whole part again; upstream reused the request body, so a retry after a 5xx sent a short or empty body.
+  `validateIdentifier` only writes the identifier when normalizing changed it, which removes a data race between the concurrent `Checksum` and `Size` calls in `Details`.
+- Why: one connection to Cloudflare R2 reached about 38 MB/s from Texas, while four filled the 1 Gbps port, so a 16 GB backup took 7 minutes to upload.
+  The limits are per node rather than per backup because nodes regularly run several backups at once, and per-backup parallelism would multiply into lag for every game server on the node.
+- Rollout: the panel's `BACKUP_MAX_PART_SIZE` should be 1 GiB so that typical backups split into enough parts to run in parallel.
+  Wings writes its resolved config back to `config.yml` on boot, so a node that already has a `backups` section gains the new keys with their defaults, and a node can be returned to one part at a time with `upload_concurrency: 1`.
+- Files: `config/config.go`, `server/backup/backup.go`, `server/backup/backup_s3.go`, `server/backup/backup_s3_upload_test.go`.
+- Conflict risk on rebase: medium; `generateRemoteRequest` and the part uploader in `backup_s3.go` are rewritten, so upstream changes to that file need a manual merge.

@@ -329,6 +329,19 @@ type Backups struct {
 	// Defaults to "best_compression" (level 9), an SGH change from upstream's "best_speed".
 	CompressionLevel string `default:"best_compression" yaml:"compression_level"`
 
+	// UploadConcurrency is how many backup parts this node uploads to S3 at the same
+	// time, shared by every backup on the node. A value below 1 uploads one part at a
+	// time, as upstream does.
+	//
+	// Defaults to 4, an SGH change; four streams fill a 1 Gbps port.
+	UploadConcurrency int `default:"4" yaml:"upload_concurrency"`
+
+	// UploadLimit caps the combined S3 upload speed of every backup on this node, in
+	// MiB/s, so backups leave bandwidth for game traffic. A value below 1 is unlimited.
+	//
+	// Defaults to 80, an SGH change.
+	UploadLimit int `default:"80" yaml:"upload_limit"`
+
 	// RestoreHostAllowlist allows backup restore downloads to connect to otherwise blocked
 	// private/internal destinations. Entries may be hostnames, IP addresses, or CIDR ranges.
 	RestoreHostAllowlist []string `yaml:"restore_host_allowlist"`
