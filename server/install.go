@@ -212,18 +212,18 @@ func (ip *InstallationProcess) Run() error {
 	}
 
 	cID, err := ip.Execute()
-	if err != nil {
+	if cID == "" {
 		_ = ip.RemoveContainer()
 		return err
 	}
 
 	// If this step fails, log a warning but don't exit out of the process. This is completely
 	// internal to the daemon's functionality, and does not affect the status of the server itself.
-	if err := ip.AfterExecute(cID); err != nil {
-		ip.Server.Log().WithField("error", err).Warn("failed to complete after-execute step of installation process")
+	if afterErr := ip.AfterExecute(cID); afterErr != nil {
+		ip.Server.Log().WithField("error", afterErr).Warn("failed to complete after-execute step of installation process")
 	}
 
-	return nil
+	return err
 }
 
 // Returns the location of the temporary data for the installation process.
@@ -493,18 +493,40 @@ func (ip *InstallationProcess) Execute() (string, error) {
 	}(r.ID)
 
 	sChan, eChan := ip.client.ContainerWait(ctx, r.ID, container.WaitConditionNotRunning)
-	select {
-	case err := <-eChan:
-		// Once the container has stopped running we can mark the install process as being completed.
-		if err == nil {
-			ip.Server.Events().Publish(DaemonMessageEvent, "Installation process completed.")
-		} else {
-			return "", err
+	if err := awaitInstallContainer(sChan, eChan); err != nil {
+		var exitError *installScriptExitError
+		if errors.As(err, &exitError) {
+			ip.Server.Events().Publish(DaemonMessageEvent, "Installation process failed: "+exitError.Error())
+			return r.ID, err
 		}
-	case <-sChan:
+		return "", err
 	}
 
+	ip.Server.Events().Publish(DaemonMessageEvent, "Installation process completed.")
 	return r.ID, nil
+}
+
+type installScriptExitError struct {
+	code int64
+}
+
+func (e *installScriptExitError) Error() string {
+	return "install: script exited with code " + strconv.FormatInt(e.code, 10)
+}
+
+func awaitInstallContainer(statusChannel <-chan container.WaitResponse, errorChannel <-chan error) error {
+	select {
+	case err := <-errorChannel:
+		return err
+	case status := <-statusChannel:
+		if status.Error != nil {
+			return errors.New("install: waiting for container failed: " + status.Error.Message)
+		}
+		if status.StatusCode != 0 {
+			return &installScriptExitError{code: status.StatusCode}
+		}
+		return nil
+	}
 }
 
 // StreamOutput streams the output of the installation process to a log file in
