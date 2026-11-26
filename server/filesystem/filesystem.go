@@ -36,6 +36,12 @@ type Filesystem struct {
 	decompressInFlightMu sync.Mutex
 	decompressInFlight   map[string]struct{}
 
+	// Tracks archive reservations (key to reserved name) so concurrent
+	// compress requests neither duplicate work nor pick the same name; see
+	// ReserveArchive.
+	archiveReservationsMu sync.Mutex
+	archiveReservations   map[string]string
+
 	isTest bool
 }
 

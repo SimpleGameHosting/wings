@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -277,4 +278,138 @@ func tarGzWithEmptyDir() ([]byte, error) {
 		return nil, err
 	}
 	return buf.Bytes(), nil
+}
+
+func TestFilesystem_ReserveArchive(t *testing.T) {
+	fs, rfs := NewFs()
+
+	first, releaseFirst, ok := fs.ReserveArchive("/", []string{"a", "b"})
+	if !ok {
+		t.Fatal("expected the first reservation to succeed")
+	}
+	if _, _, ok := fs.ReserveArchive("/", []string{"b", "a"}); ok {
+		t.Fatal("expected the same paths in a different order to be refused")
+	}
+
+	second, releaseSecond, ok := fs.ReserveArchive("/", []string{"a"})
+	if !ok {
+		t.Fatal("expected a different set to reserve independently")
+	}
+	third, releaseThird, ok := fs.ReserveArchive("/", []string{"b"})
+	if !ok {
+		t.Fatal("expected another different set to reserve independently")
+	}
+	if first == second || second == third || first == third {
+		t.Fatalf("expected unique names, got %q %q %q", first, second, third)
+	}
+	releaseSecond()
+	releaseThird()
+
+	releaseFirst()
+	if err := rfs.CreateServerFileFromString(first, "taken"); err != nil {
+		t.Fatal(err)
+	}
+	again, releaseAgain, ok := fs.ReserveArchive("/", []string{"a", "b"})
+	if !ok {
+		t.Fatal("expected the set to be reservable again after release")
+	}
+	defer releaseAgain()
+	if again == first || !strings.HasSuffix(again, ".tar.gz") {
+		t.Fatalf("expected a fresh name different from %q, got %q", first, again)
+	}
+	if !strings.HasSuffix(again, "-2.tar.gz") {
+		t.Fatalf("expected the existing name to get a -2 suffix, got %q", again)
+	}
+}
+
+func TestFilesystem_WriteArchive(t *testing.T) {
+	fs, rfs := NewFs()
+	if err := rfs.CreateServerFileFromString("hello.txt", "hello world"); err != nil {
+		t.Fatal(err)
+	}
+
+	name, release, ok := fs.ReserveArchive("/", []string{"hello.txt"})
+	if !ok {
+		t.Fatal("expected the reservation to succeed")
+	}
+	defer release()
+
+	info, err := fs.WriteArchive(context.Background(), "/", []string{"hello.txt"}, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Name() != name {
+		t.Fatalf("expected info for %q, got %q", name, info.Name())
+	}
+	if _, err := rfs.StatServerFile(name + ".partial"); !os.IsNotExist(err) {
+		t.Fatalf("expected the partial file to be gone, got %v", err)
+	}
+
+	file, err := os.Open(filepath.Join(rfs.root, "server", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	gr, err := gzip.NewReader(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(gr)
+	header, err := tr.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if header.Name != "hello.txt" {
+		t.Fatalf("expected hello.txt in the archive, got %q", header.Name)
+	}
+	body, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "hello world" {
+		t.Fatalf("unexpected archived content %q", body)
+	}
+}
+
+func TestFilesystem_WriteArchiveRemovesPartialOnCancel(t *testing.T) {
+	fs, rfs := NewFs()
+	if err := rfs.CreateServerFileFromString("hello.txt", "hello world"); err != nil {
+		t.Fatal(err)
+	}
+
+	name, release, _ := fs.ReserveArchive("/", []string{"hello.txt"})
+	defer release()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := fs.WriteArchive(ctx, "/", []string{"hello.txt"}, name); err == nil {
+		t.Fatal("expected an error from a cancelled context")
+	}
+	assertArchiveFilesAbsent(t, rfs, name)
+}
+
+func TestFilesystem_WriteArchiveRemovesPartialWhenQuotaExceeded(t *testing.T) {
+	fs, rfs := NewFs()
+	if err := rfs.CreateServerFileFromString("hello.txt", strings.Repeat("hello world ", 100)); err != nil {
+		t.Fatal(err)
+	}
+	fs.SetDiskLimit(1)
+
+	name, release, _ := fs.ReserveArchive("/", []string{"hello.txt"})
+	defer release()
+
+	_, err := fs.WriteArchive(context.Background(), "/", []string{"hello.txt"}, name)
+	if !IsErrorCode(err, ErrCodeDiskSpace) {
+		t.Fatalf("expected a disk space error, got %v", err)
+	}
+	assertArchiveFilesAbsent(t, rfs, name)
+}
+
+func assertArchiveFilesAbsent(t *testing.T, rfs *rootFs, name string) {
+	t.Helper()
+	for _, candidate := range []string{name, name + ".partial"} {
+		if _, err := rfs.StatServerFile(candidate); !os.IsNotExist(err) {
+			t.Fatalf("expected %q to not exist, got %v", candidate, err)
+		}
+	}
 }
