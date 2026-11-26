@@ -26,6 +26,13 @@ import (
 // context matching the panel's decompress request path.
 func newDecompressContext(t *testing.T, body string) (*gin.Context, *httptest.ResponseRecorder, *wserver.Server) {
 	t.Helper()
+	return newFilesContext(t, "decompress", body)
+}
+
+// newFilesContext creates a real server filesystem and a Gin request context
+// for the given files endpoint, such as "compress" or "decompress".
+func newFilesContext(t *testing.T, endpoint string, body string) (*gin.Context, *httptest.ResponseRecorder, *wserver.Server) {
+	t.Helper()
 
 	previous := config.Get()
 	next := *previous
@@ -46,7 +53,7 @@ func newDecompressContext(t *testing.T, body string) (*gin.Context, *httptest.Re
 
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
-	request := httptest.NewRequest(http.MethodPost, "/api/servers/8d2b3f6a-0000-4000-8000-000000000000/files/decompress", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "/api/servers/8d2b3f6a-0000-4000-8000-000000000000/files/"+endpoint, strings.NewReader(body))
 	c.Request = request
 	c.Request.Header.Set("Content-Type", "application/json")
 	c.Set("server", s)
@@ -87,6 +94,9 @@ func writeTestTarball(t *testing.T, s *wserver.Server, name string) {
 func TestPostServerDecompressFilesReturnsAcceptedAndExtractsInBackground(t *testing.T) {
 	c, recorder, s := newDecompressContext(t, `{"root":"/","file":"bundle.tar.gz"}`)
 	writeTestTarball(t, s, "bundle.tar.gz")
+	completions := make(chan []byte, 8)
+	s.Events().On(completions)
+	defer s.Events().Off(completions)
 
 	postServerDecompressFiles(c)
 
@@ -107,6 +117,11 @@ func TestPostServerDecompressFilesReturnsAcceptedAndExtractsInBackground(t *test
 			t.Fatal("timed out waiting for the background extraction to finish")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+
+	status := awaitCompletionEvent[wserver.FileDecompressStatus](t, completions, wserver.FileDecompressCompletedEvent)
+	if status.File != "bundle.tar.gz" || status.Directory != "/" || !status.Successful || status.Error != "" {
+		t.Fatalf("unexpected decompress completion payload: %+v", status)
 	}
 
 	// The worker must release its single-flight reservation once it finishes;
@@ -161,31 +176,45 @@ func TestPostServerDecompressFilesRejectsConcurrentDuplicate(t *testing.T) {
 	}
 }
 
-// TestDecompressRecoveryGuardContainsPanics ensures a panic from the archive
-// parser inside the background goroutine is converted into a console message
-// and an error log instead of crashing the whole daemon: the archive bytes
-// driving the parser are tenant controlled.
-func TestDecompressRecoveryGuardContainsPanics(t *testing.T) {
+// TestBackgroundFileGuardContainsPanics ensures a panic from the archive
+// parser inside the background goroutine is handed to onPanic instead of
+// crashing the whole daemon: the archive bytes driving the parser are tenant
+// controlled.
+func TestBackgroundFileGuardContainsPanics(t *testing.T) {
 	_, _, s := newDecompressContext(t, `{}`)
 
-	consoleMessages := make(chan []byte, 4)
-	s.Events().On(consoleMessages)
-	defer s.Events().Off(consoleMessages)
+	panicked := false
+	backgroundFileGuard(s, log.Fields{"file": "bomb.zip"}, func() { panicked = true }, func() { panic("simulated archive parser panic") })
 
-	decompressRecoveryGuard(s, "boom.tar.gz", func() { panic("simulated archive parser panic") })
+	if !panicked {
+		t.Fatal("expected onPanic to run after the panic was recovered")
+	}
+}
 
-	select {
-	case raw := <-consoleMessages:
-		event := events.MustDecode(raw)
-		if event.Topic != wserver.ConsoleOutputEvent {
-			t.Fatalf("expected a console output event, got topic %q", event.Topic)
+// awaitCompletionEvent waits for an event on topic and decodes its payload.
+func awaitCompletionEvent[T any](t *testing.T, received chan []byte, topic string) T {
+	t.Helper()
+
+	timeout := time.After(10 * time.Second)
+	for {
+		select {
+		case raw := <-received:
+			event := events.MustDecode(raw)
+			if event.Topic != topic {
+				continue
+			}
+			encoded, err := json.Marshal(event.Data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload T
+			if err := json.Unmarshal(encoded, &payload); err != nil {
+				t.Fatal(err)
+			}
+			return payload
+		case <-timeout:
+			t.Fatalf("timed out waiting for a %q event", topic)
 		}
-		message, _ := event.Data.(string)
-		if !strings.Contains(message, "failed") {
-			t.Fatalf("expected the console message to report the failure, got %q", message)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("expected a console message after the panic was recovered")
 	}
 }
 

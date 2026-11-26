@@ -7,22 +7,44 @@ import (
 
 // Defines all the possible output events for a server.
 const (
-	DaemonMessageEvent          = "daemon message"
-	InstallOutputEvent          = "install output"
-	InstallStartedEvent         = "install started"
-	InstallCompletedEvent       = "install completed"
-	ConsoleOutputEvent          = "console output"
-	StatusEvent                 = "status"
-	StatsEvent                  = "stats"
-	BackupRestoreCompletedEvent = "backup restore completed"
-	BackupCompletedEvent        = "backup completed"
-	TransferLogsEvent           = "transfer logs"
-	TransferStatusEvent         = "transfer status"
-	DeletedEvent                = "deleted"
-	ModpackInstallStatusEvent   = "modpack install status"
-	ModpackInstallProgressEvent = "modpack install progress"
-	SetupApplyStatusEvent       = "setup apply status"
+	DaemonMessageEvent           = "daemon message"
+	InstallOutputEvent           = "install output"
+	InstallStartedEvent          = "install started"
+	InstallCompletedEvent        = "install completed"
+	ConsoleOutputEvent           = "console output"
+	StatusEvent                  = "status"
+	StatsEvent                   = "stats"
+	BackupRestoreCompletedEvent  = "backup restore completed"
+	BackupCompletedEvent         = "backup completed"
+	TransferLogsEvent            = "transfer logs"
+	TransferStatusEvent          = "transfer status"
+	DeletedEvent                 = "deleted"
+	ModpackInstallStatusEvent    = "modpack install status"
+	ModpackInstallProgressEvent  = "modpack install progress"
+	SetupApplyStatusEvent        = "setup apply status"
+	FileCompressCompletedEvent   = "file compress completed"
+	FileDecompressCompletedEvent = "file decompress completed"
 )
+
+// FileCompressStatus is the payload of the "file compress completed" event.
+// Directory echoes the request's root exactly as received, and Error is a
+// customer-safe message, empty when Successful.
+type FileCompressStatus struct {
+	Name       string `json:"name"`
+	Directory  string `json:"directory"`
+	Successful bool   `json:"successful"`
+	Error      string `json:"error"`
+}
+
+// FileDecompressStatus is the payload of the "file decompress completed"
+// event. Directory echoes the request's root exactly as received, and Error is
+// a customer-safe message, empty when Successful.
+type FileDecompressStatus struct {
+	File       string `json:"file"`
+	Directory  string `json:"directory"`
+	Successful bool   `json:"successful"`
+	Error      string `json:"error"`
+}
 
 // Events returns the server's emitter instance.
 func (s *Server) Events() *events.Bus {

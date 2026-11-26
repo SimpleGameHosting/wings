@@ -36,6 +36,7 @@ const (
 	PermissionReceiveInstall   = "admin.websocket.install"
 	PermissionReceiveTransfer  = "admin.websocket.transfer"
 	PermissionReceiveBackups   = "backup.read"
+	PermissionReceiveFiles     = "file.read"
 )
 
 type Handler struct {
@@ -145,27 +146,9 @@ func (h *Handler) SendJson(v Message) error {
 	}
 
 	if j := h.GetJwt(); j != nil {
-		// If we're sending installation output but the user does not have the required
-		// permissions to see the output, don't send it down the line.
-		if v.Event == server.InstallOutputEvent {
-			if !j.HasPermission(PermissionReceiveInstall) {
-				return nil
-			}
-		}
-
-		// If the user does not have permission to see backup events, do not emit
-		// them over the socket.
-		if strings.HasPrefix(string(v.Event), server.BackupCompletedEvent) {
-			if !j.HasPermission(PermissionReceiveBackups) {
-				return nil
-			}
-		}
-
-		// If we are sending transfer output, only send it to the user if they have the required permissions.
-		if v.Event == server.TransferLogsEvent {
-			if !j.HasPermission(PermissionReceiveTransfer) {
-				return nil
-			}
+		// Drop the event when it requires a permission the user does not have.
+		if permission, gated := eventPermission(v.Event); gated && !j.HasPermission(permission) {
+			return nil
 		}
 	}
 
@@ -186,6 +169,23 @@ func (h *Handler) SendJson(v Message) error {
 	}
 
 	return nil
+}
+
+// eventPermission returns the permission a client needs to receive the event
+// and whether the event is gated by a permission at all.
+func eventPermission(event Event) (string, bool) {
+	switch {
+	case event == server.InstallOutputEvent:
+		return PermissionReceiveInstall, true
+	case strings.HasPrefix(string(event), server.BackupCompletedEvent):
+		return PermissionReceiveBackups, true
+	case event == server.TransferLogsEvent:
+		return PermissionReceiveTransfer, true
+	case event == server.FileCompressCompletedEvent, event == server.FileDecompressCompletedEvent:
+		return PermissionReceiveFiles, true
+	}
+
+	return "", false
 }
 
 // Sends JSON over the websocket connection, ignoring the authentication state of the

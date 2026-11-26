@@ -8,6 +8,7 @@ import (
 	"math"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -30,26 +31,106 @@ import (
 // and the compressed file will be placed at that location named
 // `archive-{date}.tar.gz`.
 func (fs *Filesystem) CompressFiles(dir string, paths []string) (ufs.FileInfo, error) {
-	a := &Archive{Filesystem: fs, BaseDirectory: dir, Files: paths}
-	d := path.Join(
-		dir,
-		fmt.Sprintf("archive-%s.tar.gz", strings.ReplaceAll(time.Now().Format(time.RFC3339), ":", "")),
-	)
-	f, err := fs.unixFS.OpenFile(d, ufs.O_WRONLY|ufs.O_CREATE, 0o644)
+	name, release, ok := fs.ReserveArchive(dir, paths)
+	if !ok {
+		return nil, errors.New("filesystem: an archive of these paths is already being created")
+	}
+	defer release()
+	return fs.WriteArchive(context.Background(), dir, paths, name)
+}
+
+// ReserveArchive reserves a unique archive file name for compressing the given
+// paths within dir and returns the release function for that reservation. It
+// returns false when the same set of paths in the same directory is already
+// reserved, so duplicate requests cannot race competing archives.
+//
+// Names follow `archive-{date}.tar.gz`, with `-2`, `-3`, ... inserted before
+// the extension when the name exists on disk or is reserved by another request.
+func (fs *Filesystem) ReserveArchive(dir string, paths []string) (string, func(), bool) {
+	cleaned := make([]string, len(paths))
+	for i, p := range paths {
+		cleaned[i] = filepath.Clean(p)
+	}
+	sort.Strings(cleaned)
+	key := dir + "\x00" + strings.Join(cleaned, "\x00")
+
+	fs.archiveReservationsMu.Lock()
+	defer fs.archiveReservationsMu.Unlock()
+
+	if fs.archiveReservations == nil {
+		fs.archiveReservations = make(map[string]string)
+	}
+	if _, busy := fs.archiveReservations[key]; busy {
+		return "", nil, false
+	}
+
+	base := fmt.Sprintf("archive-%s", strings.ReplaceAll(time.Now().Format(time.RFC3339), ":", ""))
+	name := base + ".tar.gz"
+	for suffix := 2; fs.archiveNameTaken(dir, name); suffix++ {
+		name = fmt.Sprintf("%s-%d.tar.gz", base, suffix)
+	}
+
+	fs.archiveReservations[key] = name
+	return name, func() {
+		fs.archiveReservationsMu.Lock()
+		defer fs.archiveReservationsMu.Unlock()
+		delete(fs.archiveReservations, key)
+	}, true
+}
+
+// archiveNameTaken reports whether name is reserved or already exists in dir.
+// The caller must hold archiveReservationsMu.
+func (fs *Filesystem) archiveNameTaken(dir string, name string) bool {
+	for _, reserved := range fs.archiveReservations {
+		if reserved == name {
+			return true
+		}
+	}
+	_, err := fs.unixFS.Stat(path.Join(dir, name))
+	return err == nil
+}
+
+// WriteArchive compresses the given paths in dir into the archive called name,
+// streaming through `{name}.partial` so a half-written archive never appears
+// under its final name. The partial file is removed on every failure,
+// including cancellation of ctx.
+func (fs *Filesystem) WriteArchive(ctx context.Context, dir string, paths []string, name string) (ufs.FileInfo, error) {
+	finalPath := path.Join(dir, name)
+	partialPath := finalPath + ".partial"
+
+	f, err := fs.unixFS.OpenFile(partialPath, ufs.O_WRONLY|ufs.O_CREATE|ufs.O_TRUNC, 0o644)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	succeeded := false
+	closed := false
+	defer func() {
+		if !closed {
+			_ = f.Close()
+		}
+		if !succeeded {
+			_ = fs.unixFS.Remove(partialPath)
+		}
+	}()
+
+	a := &Archive{Filesystem: fs, BaseDirectory: dir, Files: paths}
 	cw := ufs.NewCountedWriter(f)
-	if err := a.Stream(context.Background(), cw); err != nil {
+	if err := a.Stream(ctx, cw); err != nil {
 		return nil, err
 	}
 	if cw.BytesWritten() < 0 || !fs.unixFS.CanFit(cw.BytesWritten()) {
-		_ = fs.unixFS.Remove(d)
 		return nil, newFilesystemError(ErrCodeDiskSpace, nil)
 	}
+	closed = true
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if err := fs.unixFS.Rename(partialPath, finalPath); err != nil {
+		return nil, err
+	}
+	succeeded = true
 	fs.unixFS.Add(cw.BytesWritten())
-	return f.Stat()
+	return fs.unixFS.Stat(finalPath)
 }
 
 func (fs *Filesystem) archiverFileSystem(ctx context.Context, p string) (iofs.FS, io.Closer, error) {

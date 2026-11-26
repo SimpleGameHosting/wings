@@ -190,9 +190,21 @@ Every SGH modification MUST be registered here before its work is considered com
   Unknown-format archives now return their 400 deterministically; previously servers without a disk limit skipped the synchronous format check entirely and failed through the generic error path.
   The background goroutine runs under a recovery guard because the archive bytes driving the parser are tenant controlled, and a panic would otherwise crash the whole daemon instead of failing one request.
   `Filesystem.TryStartDecompression` single-flights each archive, so a duplicate request returns a logged HTTP 409 instead of racing a competing extraction into the same tree.
+  Completion is also published as the `file decompress completed` event, gated on `file.read` over the websocket (see "router: compress archives in the background").
 - Why: multi-gigabyte modpack archives outlived proxy timeouts, so users saw 504s while the extraction continued invisibly and retried into double extractions (upstream issue pterodactyl/panel#2878, open since 2020).
 - Files: `router/router_server_files.go`, `router/router_server_files_decompress_test.go`, `server/filesystem/compress.go`, `server/filesystem/compress_test.go`, `server/filesystem/filesystem.go`.
 - Conflict risk on rebase: low-medium; the handler body is upstream-owned but self-contained, and `CanDecompressFile` is additive.
+
+### router: compress archives in the background
+
+- What: `postServerCompressFiles` reserves the archive file set through the filesystem (a duplicate request returns a logged HTTP 409), writes the archive through `<name>.partial`, removes the partial on every exit path, and returns HTTP 202 with `{"name"}` holding the final archive name.
+  The compression runs in a background goroutine tied to the server context and publishes `file compress completed` on the server event bus when it finishes.
+  `file decompress completed` is published the same way when a background decompression finishes.
+  Both events are forwarded over the websocket only to clients whose JWT carries `file.read`, through `eventPermission`, which now also holds the install, backup, and transfer checks.
+- Why: customers archiving large folders through the panel saw proxy 504s because the panel request outlived the Laravel Cloud proxy timeout while Wings kept working, then retried into duplicate multi-GB archives.
+  Reserving the file set makes the retry a 409, the partial file keeps half-written archives out of the file manager, and the completion event tells the panel when the archive is ready.
+- Files: `router/router_server_files.go`, `router/router_server_files_compress_test.go`, `router/router_server_files_decompress_test.go`, `router/websocket/websocket.go`, `router/websocket/websocket_test.go`, `server/events.go`, `server/filesystem/compress.go`, `server/filesystem/compress_test.go`, `server/filesystem/filesystem.go`.
+- Conflict risk on rebase: medium; the compress handler and `Filesystem.CompressFiles` are upstream-owned, and the websocket permission checks were refactored into `eventPermission`.
 
 ### router/environment: honest power actions during boot
 
