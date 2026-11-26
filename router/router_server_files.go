@@ -412,6 +412,11 @@ func postServerCreateDirectory(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
+// postServerCompressFiles validates the request quickly and then archives the
+// files in the background: large archives routinely outlive proxy timeouts,
+// which made users retry into duplicate archives. The final archive name is
+// returned immediately and the outcome arrives as a "file compress completed"
+// event.
 func postServerCompressFiles(c *gin.Context) {
 	s := ExtractServer(c)
 
@@ -438,15 +443,55 @@ func postServerCompressFiles(c *gin.Context) {
 		return
 	}
 
-	f, err := s.Filesystem().CompressFiles(data.RootPath, data.Files)
-	if err != nil {
-		middleware.CaptureAndAbort(c, err)
+	name, release, ok := s.Filesystem().ReserveArchive(data.RootPath, data.Files)
+	if !ok {
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": "These files are already being archived, wait for it to finish.",
+		})
 		return
 	}
 
-	c.JSON(http.StatusOK, &filesystem.Stat{
-		FileInfo: f,
-		Mimetype: "application/tar+gzip",
+	go runBackgroundCompression(s, data.RootPath, data.Files, name, release)
+
+	c.JSON(http.StatusAccepted, gin.H{"name": name})
+}
+
+// runBackgroundCompression writes the archive for postServerCompressFiles
+// outside the request lifecycle, releasing the reservation and publishing
+// exactly one completion event when it finishes.
+func runBackgroundCompression(s *server.Server, rootPath string, files []string, name string, release func()) {
+	defer release()
+
+	status := server.FileCompressStatus{Name: name, Directory: rootPath}
+	publishFailure := func(message string) {
+		status.Error = message
+		s.Events().Publish(server.FileCompressCompletedEvent, status)
+	}
+	const genericFailure = "Archiving failed; contact support if this keeps happening."
+
+	backgroundFileGuard(s, func() {
+		s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Archiving %s failed; contact support if this keeps happening.", name))
+		publishFailure(genericFailure)
+	}, func() {
+		s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Archiving files into %s, this may take a while...", name))
+		backgroundLog := s.Log().WithFields(log.Fields{"root_path": rootPath, "archive": name})
+
+		if _, err := s.Filesystem().WriteArchive(s.Context(), rootPath, files, name); err != nil {
+			if filesystem.IsErrorCode(err, filesystem.ErrCodeDiskSpace) {
+				s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Unable to create %s: not enough disk space is available.", name))
+				backgroundLog.WithField("error", err).Warn("failed to archive files in background: insufficient space")
+				publishFailure("Not enough disk space is available to create this archive.")
+				return
+			}
+			s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Archiving %s failed; contact support if this keeps happening.", name))
+			backgroundLog.WithField("error", errors.WithStackIf(err)).Error("failed to archive files in background")
+			publishFailure(genericFailure)
+			return
+		}
+
+		s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Finished archiving files into %s.", name))
+		status.Successful = true
+		s.Events().Publish(server.FileCompressCompletedEvent, status)
 	})
 }
 
@@ -503,15 +548,27 @@ func postServerDecompressFiles(c *gin.Context) {
 func runBackgroundDecompression(s *server.Server, rootPath string, file string, release func()) {
 	defer release()
 
-	decompressRecoveryGuard(s, file, func() {
+	status := server.FileDecompressStatus{File: file, Directory: rootPath}
+	publishFailure := func(message string) {
+		status.Error = message
+		s.Events().Publish(server.FileDecompressCompletedEvent, status)
+	}
+	genericFailure := fmt.Sprintf("Decompressing %s failed; contact support if this keeps happening.", file)
+
+	backgroundFileGuard(s, func() {
+		s.PublishConsoleOutputFromDaemon(genericFailure)
+		publishFailure(genericFailure)
+	}, func() {
 		s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Decompressing archive %s, this may take a while...", file))
 		backgroundLog := s.Log().WithFields(log.Fields{"root_path": rootPath, "file": file})
 
 		// The server context ties the walk and the extraction to the server's
 		// lifetime rather than the already-completed HTTP request...
 		if err := s.Filesystem().SpaceAvailableForDecompression(s.Context(), rootPath, file); err != nil {
-			s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Unable to decompress %s: not enough disk space is available.", file))
+			message := fmt.Sprintf("Unable to decompress %s: not enough disk space is available.", file)
+			s.PublishConsoleOutputFromDaemon(message)
 			backgroundLog.WithField("error", err).Warn("failed to decompress file in background: insufficient space")
+			publishFailure(message)
 			return
 		}
 
@@ -519,28 +576,34 @@ func runBackgroundDecompression(s *server.Server, rootPath string, file string, 
 			// If the file is busy the user needs to stop the running server
 			// process before this archive can overwrite its files.
 			if strings.Contains(err.Error(), "text file busy") {
-				s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Unable to decompress %s: one or more of its files are in use by the running server process. Stop the server and try again.", file))
+				message := fmt.Sprintf("Unable to decompress %s: one or more of its files are in use by the running server process. Stop the server and try again.", file)
+				s.PublishConsoleOutputFromDaemon(message)
 				backgroundLog.WithField("error", errors.WithStackIf(err)).Warn("failed to decompress file in background: text file busy")
+				publishFailure(message)
 				return
 			}
-			s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Decompressing %s failed; contact support if this keeps happening.", file))
+			s.PublishConsoleOutputFromDaemon(genericFailure)
 			backgroundLog.WithField("error", errors.WithStackIf(err)).Error("failed to decompress file in background")
+			publishFailure(genericFailure)
 			return
 		}
 
 		s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Finished decompressing %s.", file))
+		status.Successful = true
+		s.Events().Publish(server.FileDecompressCompletedEvent, status)
 	})
 }
 
-// decompressRecoveryGuard runs work and converts any panic into a console
-// message and an error log. The archive bytes driving the parser are tenant
-// controlled, and a panic in this background goroutine would otherwise crash
-// the whole daemon instead of failing one request.
-func decompressRecoveryGuard(s *server.Server, file string, work func()) {
+// backgroundFileGuard runs work and converts any panic into an error log and a
+// call to onPanic, which reports the operation's failure. The archive bytes
+// driving the parser are tenant controlled, and a panic in this background
+// goroutine would otherwise crash the whole daemon instead of failing one
+// request.
+func backgroundFileGuard(s *server.Server, onPanic func(), work func()) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Decompressing %s failed; contact support if this keeps happening.", file))
-			s.Log().WithFields(log.Fields{"file": file, "panic": recovered}).Error("recovered from panic during background decompression")
+			s.Log().WithField("panic", recovered).Error("recovered from panic during background file operation")
+			onPanic()
 		}
 	}()
 
