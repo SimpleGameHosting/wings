@@ -102,33 +102,33 @@ func (fs *Filesystem) WriteArchive(ctx context.Context, dir string, paths []stri
 	if err != nil {
 		return nil, err
 	}
+	succeeded := false
 	closed := false
 	defer func() {
 		if !closed {
 			_ = f.Close()
+		}
+		if !succeeded {
+			_ = fs.unixFS.Remove(partialPath)
 		}
 	}()
 
 	a := &Archive{Filesystem: fs, BaseDirectory: dir, Files: paths}
 	cw := ufs.NewCountedWriter(f)
 	if err := a.Stream(ctx, cw); err != nil {
-		_ = fs.unixFS.Remove(partialPath)
 		return nil, err
 	}
 	if cw.BytesWritten() < 0 || !fs.unixFS.CanFit(cw.BytesWritten()) {
-		_ = fs.unixFS.Remove(partialPath)
 		return nil, newFilesystemError(ErrCodeDiskSpace, nil)
 	}
-	if err := f.Close(); err != nil {
-		closed = true
-		_ = fs.unixFS.Remove(partialPath)
-		return nil, err
-	}
 	closed = true
-	if err := fs.unixFS.Rename(partialPath, finalPath); err != nil {
-		_ = fs.unixFS.Remove(partialPath)
+	if err := f.Close(); err != nil {
 		return nil, err
 	}
+	if err := fs.unixFS.Rename(partialPath, finalPath); err != nil {
+		return nil, err
+	}
+	succeeded = true
 	fs.unixFS.Add(cw.BytesWritten())
 	return fs.unixFS.Stat(finalPath)
 }
