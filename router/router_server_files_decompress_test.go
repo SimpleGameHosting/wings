@@ -39,7 +39,6 @@ func newFilesContext(t *testing.T, endpoint string, body string) (*gin.Context, 
 	next.System.Data = t.TempDir()
 	next.System.User.Uid = os.Getuid()
 	next.System.User.Gid = os.Getgid()
-	next.System.DiskCheckInterval = 150
 	config.Set(&next)
 	t.Cleanup(func() { config.Set(previous) })
 

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pterodactyl/wings/config"
 	wserver "github.com/pterodactyl/wings/server"
 )
 
@@ -124,6 +125,12 @@ func TestPostServerCompressFilesPublishesFailureEvent(t *testing.T) {
 }
 
 func TestPostServerCompressFilesKeepsSynchronousChecks(t *testing.T) {
+	previous := config.Get()
+	next := *previous
+	next.System.DiskCheckInterval = 150
+	config.Set(&next)
+	t.Cleanup(func() { config.Set(previous) })
+
 	c, recorder, _ := newFilesContext(t, "compress", `{"root":"/","files":[]}`)
 	postServerCompressFiles(c)
 	if c.Writer.Status() != http.StatusUnprocessableEntity {
@@ -131,7 +138,12 @@ func TestPostServerCompressFilesKeepsSynchronousChecks(t *testing.T) {
 	}
 
 	c, recorder, s := newFilesContext(t, "compress", `{"root":"/","files":["hello.txt"]}`)
-	writeCompressibleFile(t, s, "hello.txt", strings.Repeat("hello world ", 100))
+	if err := os.MkdirAll(s.Filesystem().Path(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(s.Filesystem().Path(), "hello.txt"), []byte(strings.Repeat("hello world ", 100)), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	s.Filesystem().SetDiskLimit(1)
 	if _, err := s.Filesystem().DiskUsage(false); err != nil {
 		t.Fatal(err)
