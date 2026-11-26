@@ -469,7 +469,7 @@ func runBackgroundCompression(s *server.Server, rootPath string, files []string,
 	}
 	const genericFailure = "Archiving failed; contact support if this keeps happening."
 
-	backgroundFileGuard(s, func() {
+	backgroundFileGuard(s, log.Fields{"archive": name}, func() {
 		s.PublishConsoleOutputFromDaemon(fmt.Sprintf("Archiving %s failed; contact support if this keeps happening.", name))
 		publishFailure(genericFailure)
 	}, func() {
@@ -555,7 +555,7 @@ func runBackgroundDecompression(s *server.Server, rootPath string, file string, 
 	}
 	genericFailure := fmt.Sprintf("Decompressing %s failed; contact support if this keeps happening.", file)
 
-	backgroundFileGuard(s, func() {
+	backgroundFileGuard(s, log.Fields{"file": file}, func() {
 		s.PublishConsoleOutputFromDaemon(genericFailure)
 		publishFailure(genericFailure)
 	}, func() {
@@ -599,10 +599,10 @@ func runBackgroundDecompression(s *server.Server, rootPath string, file string, 
 // driving the parser are tenant controlled, and a panic in this background
 // goroutine would otherwise crash the whole daemon instead of failing one
 // request.
-func backgroundFileGuard(s *server.Server, onPanic func(), work func()) {
+func backgroundFileGuard(s *server.Server, subject log.Fields, onPanic func(), work func()) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			s.Log().WithField("panic", recovered).Error("recovered from panic during background file operation")
+			s.Log().WithFields(subject).WithField("panic", recovered).Error("recovered from panic during background file operation")
 			onPanic()
 		}
 	}()

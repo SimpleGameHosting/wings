@@ -184,7 +184,7 @@ func TestBackgroundFileGuardContainsPanics(t *testing.T) {
 	_, _, s := newDecompressContext(t, `{}`)
 
 	panicked := false
-	backgroundFileGuard(s, func() { panicked = true }, func() { panic("simulated archive parser panic") })
+	backgroundFileGuard(s, log.Fields{"file": "bomb.zip"}, func() { panicked = true }, func() { panic("simulated archive parser panic") })
 
 	if !panicked {
 		t.Fatal("expected onPanic to run after the panic was recovered")

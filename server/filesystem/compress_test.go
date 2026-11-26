@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	. "github.com/franela/goblin"
 )
@@ -308,6 +309,12 @@ func TestFilesystem_ReserveArchive(t *testing.T) {
 	releaseFirst()
 	if err := rfs.CreateServerFileFromString(first, "taken"); err != nil {
 		t.Fatal(err)
+	}
+	for _, offset := range []time.Duration{0, time.Second} {
+		candidate := "archive-" + time.Now().Add(offset).Format("2006-01-02T150405Z0700") + ".tar.gz"
+		if err := rfs.CreateServerFileFromString(candidate, "taken"); err != nil {
+			t.Fatal(err)
+		}
 	}
 	again, releaseAgain, ok := fs.ReserveArchive("/", []string{"a", "b"})
 	if !ok {
